@@ -14,6 +14,7 @@
   import { baseHeaderClasses, pxScreen } from '$lib/css-classes';
   import { mergeEntries } from '$lib/components/merged-header-icon/merged-entries';
   import { pagePath } from '$lib/data/env';
+  import cloudReaderLogo from '$lib/assets/cloud-reader-logo.png';
   import {
     cloudSort$,
     requestCloudAdd,
@@ -43,10 +44,16 @@
 <header class={baseHeaderClasses}>
   <div class="{pxScreen} flex h-full items-center justify-between">
     <div
-      class="flex items-center text-[1.12rem] tracking-[0.01em]"
+      class="flex items-center gap-2 text-[1.12rem] tracking-[0.01em]"
       style="font-family: 'Segoe UI Variable', 'Segoe UI', Arial, sans-serif; font-weight: 650;"
       aria-label="Cloud Reader"
     >
+      <img
+        src={cloudReaderLogo}
+        alt=""
+        aria-hidden="true"
+        class="h-7 w-7 shrink-0"
+      />
       <span>Cloud Reader</span>
     </div>
 
