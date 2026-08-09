@@ -1,0 +1,5 @@
+# Copy this file to .dev.vars for local Wrangler testing.
+# AUTH_TOKEN can be the same token already saved in the reader.
+AUTH_TOKEN=PASTE_YOUR_AUTH_TOKEN_HERE
+# This can be a newly generated local-only value; it does not need to match production.
+SIGNING_KEY=PASTE_A_RANDOM_LOCAL_SIGNING_KEY_HERE

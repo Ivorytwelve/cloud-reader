@@ -1,0 +1,326 @@
+/* Write your global styles here, in SCSS syntax. Variables and mixins from the src/variables.scss file are available here without importing */
+/* Write your global styles here, in PostCSS syntax */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+:root {
+  /* Ttsu Cloud blue palette */
+  --ttu-blue-050: #e3f2fd;
+  --ttu-blue-200: #90caf9;
+  --ttu-blue-500: #2196f3;
+  --ttu-blue-900: #0d47a1;
+  --ttu-surface: color-mix(in srgb, #e3f2fd 42%, white);
+  --ttu-surface-hover: color-mix(in srgb, #90caf9 38%, white);
+  --ttu-ink: #16283d;
+  --ttu-ink-muted: #546575;
+
+  --font-color: var(--ttu-ink);
+  --background-color: var(--ttu-blue-050);
+  scrollbar-color: var(--ttu-blue-500) color-mix(in srgb, var(--ttu-blue-200) 38%, transparent);
+  accent-color: var(--ttu-blue-500);
+}
+
+.book-cover {
+  overflow-clip-margin: unset;
+}
+
+@layer base {
+  body {
+    color: var(--font-color);
+    background-color: var(--background-color);
+  }
+}
+
+@layer utilities {
+  .writing-horizontal-tb {
+    writing-mode: horizontal-tb;
+  }
+
+  .tap-highlight-transparent {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+
+
+/*
+ * Palette bridge for Ttsu's existing Tailwind utility classes. Keeping this
+ * here lets the old menus, popovers, dialogs and settings inherit the new
+ * theme without rewriting every component.
+ */
+@layer utilities {
+  .bg-gray-700 {
+    background-color: var(--ttu-blue-200) !important;
+    color: var(--ttu-ink) !important;
+  }
+
+  .bg-gray-900,
+  .hover\:bg-gray-900:hover {
+    background-color: var(--ttu-blue-500) !important;
+    color: white !important;
+  }
+
+  .bg-white {
+    background-color: var(--ttu-surface) !important;
+    color: var(--ttu-ink);
+  }
+
+  .hover\:bg-white:hover {
+    background-color: var(--ttu-surface-hover) !important;
+  }
+
+  .hover\:text-gray-700:hover,
+  .text-gray-700 {
+    color: var(--ttu-ink) !important;
+  }
+
+  .border-gray-400,
+  .border-gray-400\/50 {
+    border-color: var(--ttu-blue-200) !important;
+  }
+
+  .bg-slate-300,
+  .hover\:bg-slate-300:hover {
+    background-color: var(--ttu-blue-200) !important;
+  }
+
+  .bg-slate-200 {
+    background-color: var(--ttu-surface-hover) !important;
+  }
+
+  .text-cyan-900 {
+    color: var(--ttu-blue-900) !important;
+  }
+
+  .after\:bg-blue-700::after {
+    background-color: var(--ttu-blue-500) !important;
+  }
+}
+
+::selection {
+  color: var(--ttu-blue-900);
+  background: var(--ttu-blue-200);
+}
+
+:where(button, input, select, textarea):focus-visible {
+  outline-color: var(--ttu-blue-900);
+}
+
+input,
+select,
+textarea {
+  --tw-ring-color: var(--ttu-blue-500);
+}
+
+@font-face {
+  font-family: 'KZ UDMincho';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/KZUDMincho-Regular.woff2') format('woff2'),
+    url('$lib/assets/fonts/KZUDMincho-Regular.woff') format('woff');
+}
+
+@font-face {
+  font-family: 'KZ UDMincho';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/KZUDMincho-Bold.woff2') format('woff2'),
+    url('$lib/assets/fonts/KZUDMincho-Bold.woff') format('woff');
+}
+
+@font-face {
+  font-family: 'KZ UDGothic';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/KZUDGothic-Regular.woff2') format('woff2'),
+    url('$lib/assets/fonts/KZUDGothic-Regular.woff') format('woff');
+}
+
+@font-face {
+  font-family: 'KZ UDGothic';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/KZUDGothic-Bold.woff2') format('woff2'),
+    url('$lib/assets/fonts/KZUDGothic-Bold.woff') format('woff');
+}
+
+@font-face {
+  font-family: 'Genei Koburi Mincho v5';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/GeneiKoburi-Regular.woff2') format('woff2'),
+    url('$lib/assets/fonts/GeneiKoburi-Regular.woff') format('woff');
+}
+
+@font-face {
+  font-family: 'Klee One';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/KleeOne-Regular.woff2') format('woff2'),
+    url('$lib/assets/fonts/KleeOne-Regular.woff') format('woff');
+}
+
+@font-face {
+  font-family: 'Klee One';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/KleeOne-SemiBold.woff2') format('woff2'),
+    url('$lib/assets/fonts/KleeOne-SemiBold.woff') format('woff');
+}
+
+@font-face {
+  font-family: 'Klee One SemiBold';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/KleeOne-SemiBold.woff2') format('woff2'),
+    url('$lib/assets/fonts/KleeOne-SemiBold.woff') format('woff');
+}
+
+@font-face {
+  font-family: 'Noto Sans JP';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/NotoSansJP-Regular.woff2') format('woff2'),
+    url('$lib/assets/fonts/NotoSansJP-Regular.woff') format('woff');
+}
+
+@font-face {
+  font-family: 'Noto Sans JP';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/NotoSansJP-Medium.woff2') format('woff2'),
+    url('$lib/assets/fonts/NotoSansJP-Medium.woff') format('woff');
+}
+
+@font-face {
+  font-family: 'Noto Sans JP';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/NotoSansJP-Bold.woff2') format('woff2'),
+    url('$lib/assets/fonts/NotoSansJP-Bold.woff') format('woff');
+}
+
+@font-face {
+  font-family: 'Noto Serif JP';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/NotoSerifJP-Regular.woff2') format('woff2'),
+    url('$lib/assets/fonts/NotoSerifJP-Regular.woff') format('woff');
+}
+
+@font-face {
+  font-family: 'Noto Serif JP';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/NotoSerifJP-Medium.woff2') format('woff2'),
+    url('$lib/assets/fonts/NotoSerifJP-Medium.woff') format('woff');
+}
+
+@font-face {
+  font-family: 'Noto Serif JP';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/NotoSerifJP-Bold.woff2') format('woff2'),
+    url('$lib/assets/fonts/NotoSerifJP-Bold.woff') format('woff');
+}
+
+@font-face {
+  font-family: 'Shippori Mincho';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/ShipporiMincho-Regular.woff2') format('woff2'),
+    url('$lib/assets/fonts/ShipporiMincho-Regular.woff') format('woff');
+}
+
+@font-face {
+  font-family: 'Shippori Mincho';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/ShipporiMincho-Medium.woff2') format('woff2'),
+    url('$lib/assets/fonts/ShipporiMincho-Medium.woff') format('woff');
+}
+
+@font-face {
+  font-family: 'Shippori Mincho';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src:
+    local(''),
+    url('$lib/assets/fonts/ShipporiMincho-Bold.woff2') format('woff2'),
+    url('$lib/assets/fonts/ShipporiMincho-Bold.woff') format('woff');
+}
+
+
+/* v0.3.12.3: rounded controls while preserving the blue palette */
+.ttu-theme-preview {
+  border-color: var(--ttu-blue-200) !important;
+  box-shadow: 0 1px 2px rgb(13 71 161 / 0.08);
+}
+
+.ttu-theme-preview--selected {
+  border-color: var(--ttu-blue-500) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ttu-blue-200) 58%, white), 0 2px 8px rgb(13 71 161 / 0.12);
+  transform: translateY(-1px);
+}
+
+.ttu-theme-preview--unselected:hover {
+  border-color: var(--ttu-blue-500) !important;
+  box-shadow: 0 2px 6px rgb(33 150 243 / 0.12);
+  transform: translateY(-1px);
+}
+
+button.rounded-xl,
+button.rounded-lg {
+  overflow: hidden;
+}

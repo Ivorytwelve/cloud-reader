@@ -1,0 +1,38 @@
+name = "ttu-cloud"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+[[r2_buckets]]
+binding = "LIBRARY"
+bucket_name = "ttu-library"
+
+[[durable_objects.bindings]]
+name = "QUOTA"
+class_name = "QuotaGuard"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["QuotaGuard"]
+
+[vars]
+# Comma-separated; include localhost while developing.
+ALLOWED_ORIGIN = "https://YOUR_GITHUB_NAME.github.io,http://localhost:5173"
+
+# Safety limits. The storage cap is deliberately below R2's 10 GB free monthly
+# storage allowance to leave room for small metadata objects and unit differences.
+MAX_STORAGE_BYTES = "9500000000"
+MAX_WRITE_OPS_PER_DAY = "5000"
+MAX_READ_OPS_PER_DAY = "20000"
+MAX_WRITE_OPS_PER_MINUTE = "120"
+MAX_READ_OPS_PER_MINUTE = "600"
+
+# Incomplete multipart uploads are reserved against the hard quota immediately.
+# The Durable Object aborts abandoned uploads after 24 hours.
+MULTIPART_RESERVATION_TTL_SECONDS = "86400"
+
+# Set secrets with:
+# npx wrangler secret put AUTH_TOKEN
+# npx wrangler secret put SIGNING_KEY
+
+# Cloud statistics are stored as tiny per-device/day JSON snapshots in the same
+# private R2 bucket. No additional database or binding is required.
