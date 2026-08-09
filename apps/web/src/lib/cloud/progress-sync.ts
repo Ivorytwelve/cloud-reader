@@ -37,6 +37,15 @@ export class CloudProgressSync {
     return snapshot.progress;
   }
 
+  /** Seed the session from a bulk library snapshot without another network request. */
+  seed(progress?: CloudProgress, etag?: string): void {
+    const currentUpdatedAt = this.latest?.updatedAt || 0;
+    const seededUpdatedAt = progress?.updatedAt || 0;
+    if (this.latest && seededUpdatedAt < currentUpdatedAt) return;
+    this.latest = progress;
+    this.etag = etag;
+  }
+
   get current(): CloudProgress | undefined {
     return this.latest;
   }

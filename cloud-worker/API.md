@@ -3,6 +3,7 @@
 All routes except `/health` and signed asset GET/HEAD reads require `Authorization: Bearer <AUTH_TOKEN>`.
 
 - `GET /v1/library` — library manifest.
+- `GET /v1/library/snapshot` — bulk library refresh: manifest, quota, per-book progress/ETags, and signed cover URLs in one browser request.
 - `PUT /v1/books/:id` — create/update book metadata.
 - `DELETE /v1/books/:id` — remove metadata, assets, and progress.
 - `GET /v1/books/:id/assets/:kind` — stream/download an asset; supports Range for media.
@@ -16,4 +17,4 @@ All routes except `/health` and signed asset GET/HEAD reads require `Authorizati
 - `GET /v1/progress/:id` — get reader/audiobook progress and ETag.
 - `PUT /v1/progress/:id` — save progress; optionally send `If-Match` with the previous ETag.
 
-Asset kinds: `epub`, `audio`, `subtitles`, `cover`.
+Asset kinds: `epub`, `audio`, `subtitles`, `cover`, `audioCover`, `alignment`.

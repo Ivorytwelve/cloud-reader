@@ -2,7 +2,9 @@ import type {
   AssetKind,
   AudioChapter,
   CloudBook,
+  CloudLibrarySnapshot,
   CloudProgress,
+  ProgressSnapshot,
   CloudStatisticAggregate,
   CloudStatisticSnapshot,
   LibraryManifest,
@@ -549,6 +551,13 @@ async function isSignedAuthorized(url: URL, env: Env): Promise<boolean> {
   return constantTimeEqualHex(signature, expected);
 }
 
+async function signedAssetUrl(origin: string, bookId: string, kind: AssetKind, env: Env): Promise<string> {
+  const expires = Math.floor(Date.now() / 1000) + SIGNED_URL_TTL_SECONDS;
+  const path = `/v1/books/${bookId}/assets/${kind}`;
+  const sig = await sign(path, expires, env.SIGNING_KEY);
+  return `${origin}${path}?expires=${expires}&sig=${sig}`;
+}
+
 async function streamAsset(request: Request, env: Env, bookId: string, kind: AssetKind): Promise<Response> {
   await consumeBudget(env, 'read', 1);
   const object = await env.LIBRARY.get(assetKey(bookId, kind), { range: request.headers });
@@ -600,6 +609,45 @@ async function route(request: Request, env: Env): Promise<Response> {
 
   if (request.method === 'GET' && url.pathname === '/v1/quota') {
     return json(await ensureQuotaInitialized(env));
+  }
+
+  if (request.method === 'GET' && url.pathname === '/v1/library/snapshot') {
+    // Charge the manifest read before touching R2, then account for the progress
+    // objects after we know how many books are present.
+    await consumeBudget(env, 'read', 1);
+    const { manifest } = await readManifest(env);
+    if (manifest.books.length) await consumeBudget(env, 'read', manifest.books.length);
+
+    const progressEntries = await Promise.all(
+      manifest.books.map(async (book): Promise<[string, ProgressSnapshot]> => {
+        const object = await env.LIBRARY.get(progressKey(book.id));
+        if (!object) return [book.id, {}];
+        try {
+          return [book.id, { progress: await object.json<CloudProgress>(), etag: object.httpEtag }];
+        } catch {
+          return [book.id, {}];
+        }
+      }),
+    );
+
+    const coverEntries = await Promise.all(
+      manifest.books
+        .filter((book) => !!book.assets.cover)
+        .map(async (book): Promise<[string, string]> => [
+          book.id,
+          await signedAssetUrl(url.origin, book.id, 'cover', env),
+        ]),
+    );
+
+    const snapshot: CloudLibrarySnapshot = {
+      version: 1,
+      generatedAt: Date.now(),
+      library: manifest,
+      quota: await ensureQuotaInitialized(env),
+      progress: Object.fromEntries(progressEntries),
+      coverUrls: Object.fromEntries(coverEntries),
+    };
+    return json(snapshot, 200, { 'cache-control': 'no-store' });
   }
 
   if (request.method === 'GET' && url.pathname === '/v1/library') {
@@ -673,10 +721,9 @@ async function route(request: Request, env: Env): Promise<Response> {
 
     if (request.method === 'POST' && parts[5] === 'signed-url') {
       await requireBook(env, bookId);
-      const expires = Math.floor(Date.now() / 1000) + SIGNED_URL_TTL_SECONDS;
-      const path = `/v1/books/${bookId}/assets/${kind}`;
-      const sig = await sign(path, expires, env.SIGNING_KEY);
-      return json({ url: `${url.origin}${path}?expires=${expires}&sig=${sig}`, expires });
+      const signedUrl = await signedAssetUrl(url.origin, bookId, kind, env);
+      const expires = Number(new URL(signedUrl).searchParams.get('expires'));
+      return json({ url: signedUrl, expires });
     }
 
     if (request.method === 'PUT' && parts[5] === 'direct') {

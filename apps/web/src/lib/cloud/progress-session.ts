@@ -1,6 +1,7 @@
 import { TtsuCloudApi } from './api';
 import { loadCloudConfig } from './config';
 import { CloudProgressSync, getOrCreateDeviceId } from './progress-sync';
+import type { ProgressSnapshot } from './types';
 
 interface SessionEntry {
   sync: CloudProgressSync;
@@ -35,4 +36,24 @@ export function getCloudProgressSession(
 export function clearCloudProgressSession(bookId?: string): void {
   if (bookId) sessions.delete(bookId);
   else sessions.clear();
+}
+
+export function seedCloudProgressSession(
+  bookId: string,
+  snapshot: ProgressSnapshot,
+  api: TtsuCloudApi = getConfiguredCloudApi() as TtsuCloudApi
+): SessionEntry | undefined {
+  if (!api) return undefined;
+
+  const existing = sessions.get(bookId);
+  if (existing) {
+    existing.sync.seed(snapshot.progress, snapshot.etag);
+    return existing;
+  }
+
+  const sync = new CloudProgressSync(api, bookId, getOrCreateDeviceId());
+  sync.seed(snapshot.progress, snapshot.etag);
+  const entry: SessionEntry = { sync, loaded: Promise.resolve() };
+  sessions.set(bookId, entry);
+  return entry;
 }

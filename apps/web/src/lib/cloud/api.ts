@@ -1,4 +1,4 @@
-import type { AssetKind, CloudBook, CloudProgress, CloudQuotaStatus, CloudStatisticAggregate, CloudStatisticSnapshot, LibraryManifest, ProgressSnapshot } from './types';
+import type { AssetKind, CloudBook, CloudLibrarySnapshot, CloudProgress, CloudQuotaStatus, CloudStatisticAggregate, CloudStatisticSnapshot, LibraryManifest, ProgressSnapshot } from './types';
 
 export interface CloudApiOptions {
   baseUrl: string;
@@ -59,6 +59,31 @@ export class TtsuCloudApi {
 
   async getLibrary(): Promise<LibraryManifest> {
     return (await this.request<LibraryManifest>('/v1/library')).data;
+  }
+
+  async getLibrarySnapshot(): Promise<CloudLibrarySnapshot> {
+    try {
+      return (await this.request<CloudLibrarySnapshot>('/v1/library/snapshot')).data;
+    } catch (error) {
+      // Allow the frontend and Worker to be deployed in either order. Older
+      // Workers do not have the bulk endpoint, so temporarily fall back to the
+      // pre-v0.1.1 request pattern instead of breaking the library.
+      if (!(error instanceof CloudApiError) || error.status !== 404) throw error;
+
+      const [library, quota] = await Promise.all([this.getLibrary(), this.getQuota()]);
+      const progress: CloudLibrarySnapshot['progress'] = {};
+      const coverUrls: Record<string, string> = {};
+      await Promise.all(
+        library.books.map(async (book) => {
+          progress[book.id] = await this.getProgress(book.id).catch(() => ({}));
+          if (book.assets.cover) {
+            const url = await this.getSignedAssetUrl(book.id, 'cover').catch(() => '');
+            if (url) coverUrls[book.id] = url;
+          }
+        })
+      );
+      return { version: 1, generatedAt: Date.now(), library, quota, progress, coverUrls };
+    }
   }
 
   async getQuota(): Promise<CloudQuotaStatus> {

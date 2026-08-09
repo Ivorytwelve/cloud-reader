@@ -179,6 +179,7 @@
     hydrateLinkedCloudReaderProgress,
     saveLinkedCloudReaderProgress
   } from '$lib/cloud/reader-progress';
+  import { getCloudLinkByLocalBookId } from '$lib/cloud/book-links';
   import {
     clearRange,
     getParagraphToPoint,
@@ -197,6 +198,8 @@
   let bookmarkManager: BookmarkManager | undefined;
   let pageManager: PageManager | undefined;
   let bookmarkData: Promise<BooksDbBookmarkData | undefined> = Promise.resolve(undefined);
+  let lastCloudReaderProgressSignature = '';
+  let cloudReaderAutosaveNotBefore = 0;
   let customReadingPointTop = -2;
   let customReadingPointLeft = -2;
   let customReadingPoint = $verticalMode$
@@ -503,7 +506,7 @@
 
 
   const cloudReaderProgress$ = iffBrowser(() => fromEvent(document, PAGE_CHANGE)).pipe(
-    auditTime(10_000),
+    auditTime(5_000),
     tap(() => {
       void saveCurrentCloudReaderProgress();
     }),
@@ -513,7 +516,7 @@
   const cloudReaderVisibility$ = iffBrowser(() => fromEvent(document, 'visibilitychange')).pipe(
     filter(() => document.visibilityState === 'hidden'),
     tap(() => {
-      void saveCurrentCloudReaderProgress();
+      void saveCurrentCloudReaderProgress(true);
     }),
     reduceToEmptyString()
   );
@@ -580,7 +583,17 @@
     document.dispatchEvent(new CustomEvent(SKIPKEYLISTENER, { detail: $skipKeyDownListener$ }));
   }
 
-  onMount(() => document.addEventListener('ttu-action', handleAction, false));
+  onMount(() => {
+    document.addEventListener('ttu-action', handleAction, false);
+    cloudReaderAutosaveNotBefore = Date.now() + 8000;
+
+    const onPageHide = () => void saveCurrentCloudReaderProgress(true);
+    window.addEventListener('pagehide', onPageHide);
+
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+    };
+  });
 
   function handleAction({ detail }: any) {
     if (!detail.type) {
@@ -605,7 +618,7 @@
 
   onDestroy(() => {
     if (browser) {
-      void saveCurrentCloudReaderProgress();
+      void saveCurrentCloudReaderProgress(true);
       document.removeEventListener('ttu-action', handleAction, false);
       document.documentElement.lang = 'ja';
     }
@@ -1165,14 +1178,43 @@
     return bookId;
   }
 
-  async function saveCurrentCloudReaderProgress() {
+  async function saveCurrentCloudReaderProgress(force = false) {
     const bookId = getBookIdSync();
-    if (!bookId || !bookmarkManager) return;
+    if (!bookId || !bookmarkManager || (blockDataUpdates && !force)) return;
+    if (!getCloudLinkByLocalBookId(bookId)) return;
+    if (!force && Date.now() < cloudReaderAutosaveNotBefore) return;
 
     const data = bookmarkManager.formatBookmarkData(bookId, customReadingPointScrollOffset);
-    await saveLinkedCloudReaderProgress(bookId, data).catch((error) => {
+    const signature = [
+      data.exploredCharCount ?? '',
+      data.scrollX ?? '',
+      data.scrollY ?? '',
+      data.progress ?? ''
+    ].join('|');
+    if (!force && signature === lastCloudReaderProgressSignature) return;
+
+    try {
+      // Keep the invisible local cache coherent too, but cloud remains canonical
+      // and is reapplied on every cloud open.
+      await database.putBookmark(data);
+      bookmarkData = Promise.resolve(data);
+      await saveLinkedCloudReaderProgress(bookId, data);
+      lastCloudReaderProgressSignature = signature;
+    } catch (error) {
       logger.warn(`Cloud progress save failed: ${error instanceof Error ? error.message : String(error)}`);
-    });
+    }
+  }
+
+  async function flushCloudAudiobookProgress() {
+    const pending: Promise<unknown>[] = [];
+    document.dispatchEvent(
+      new CustomEvent('ttu-cloud:flush-audiobook-progress', {
+        detail: {
+          waitUntil: (promise: Promise<unknown>) => pending.push(promise)
+        }
+      })
+    );
+    if (pending.length) await Promise.allSettled(pending);
   }
 
   async function bookmarkPage() {
@@ -1427,6 +1469,11 @@
       if (!$manualBookmark$) {
         await bookmarkPage();
       }
+
+      // SPA navigation must not race the final cloud writes. Reader and
+      // audiobook positions are flushed before the route changes.
+      await saveCurrentCloudReaderProgress(true);
+      await flushCloudAudiobookProgress();
 
       if ($statisticsEnabled$ && trackerElm) {
         const [hadError, updated] = await trackerElm.flushUpdates(true);

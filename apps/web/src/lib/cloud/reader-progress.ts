@@ -16,12 +16,6 @@ export async function hydrateLinkedCloudReaderProgress(localBookId: number): Pro
   const bookmark = remote?.reader?.bookmark;
   if (!bookmark) return;
 
-  const local = await database.getBookmark(localBookId);
-  const remoteModified = bookmark.lastBookmarkModified || remote?.reader?.updatedAt || 0;
-  const localModified = local?.lastBookmarkModified || 0;
-
-  if (local && localModified >= remoteModified) return;
-
   await database.putBookmark({
     dataId: localBookId,
     scrollX: bookmark.scrollX,

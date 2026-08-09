@@ -175,6 +175,10 @@ interface CloudAudiobookProgressEventDetail {
   paused?: boolean;
 }
 
+interface CloudProgressFlushDetail {
+  waitUntil?: (promise: Promise<unknown>) => void;
+}
+
 interface CloudAlignmentSavedDetail {
   localBookId: number;
   elementHtml: string;
@@ -194,7 +198,7 @@ export function installCloudAudiobookProgressEvents(): () => void {
     if (!detail || !Number.isFinite(detail.seconds)) return;
 
     const now = Date.now();
-    const shouldSave = detail.paused || now - lastCloudSaveAt >= 10_000;
+    const shouldSave = detail.paused || now - lastCloudSaveAt >= 5_000;
     if (!shouldSave) return;
     lastCloudSaveAt = now;
 
@@ -212,6 +216,13 @@ export function installCloudAudiobookProgressEvents(): () => void {
         })
       )
       .catch(() => undefined);
+  };
+
+  const onFlushProgress = (event: Event) => {
+    const detail = (event as CustomEvent<CloudProgressFlushDetail>).detail;
+    const promise = saveCloudAudiobookProgress(true);
+    detail?.waitUntil?.(promise);
+    void promise.catch(() => undefined);
   };
 
   const onVisibilityChange = () => {
@@ -240,12 +251,14 @@ export function installCloudAudiobookProgressEvents(): () => void {
   };
 
   document.addEventListener('ttu-cloud:audiobook-progress', onProgress as EventListener);
+  document.addEventListener('ttu-cloud:flush-audiobook-progress', onFlushProgress as EventListener);
   document.addEventListener('ttu-cloud:alignment-saved', onAlignmentSaved as EventListener);
   document.addEventListener('ttu-cloud:alignment-reset', onAlignmentReset as EventListener);
   document.addEventListener('visibilitychange', onVisibilityChange);
 
   return () => {
     document.removeEventListener('ttu-cloud:audiobook-progress', onProgress as EventListener);
+    document.removeEventListener('ttu-cloud:flush-audiobook-progress', onFlushProgress as EventListener);
     document.removeEventListener('ttu-cloud:alignment-saved', onAlignmentSaved as EventListener);
     document.removeEventListener('ttu-cloud:alignment-reset', onAlignmentReset as EventListener);
     document.removeEventListener('visibilitychange', onVisibilityChange);

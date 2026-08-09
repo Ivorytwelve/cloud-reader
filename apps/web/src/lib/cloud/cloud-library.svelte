@@ -13,8 +13,8 @@
   import { loadCloudConfig } from './config';
   import { addBookToCloud } from './library';
   import { applyRemoteReaderProgress, ensureCloudBookLocal } from './local-library';
-  import { clearCloudProgressSession } from './progress-session';
-  import type { CloudAlignmentInfo, CloudBook, CloudProgress, CloudQuotaStatus, LibraryManifest } from './types';
+  import { clearCloudProgressSession, seedCloudProgressSession } from './progress-session';
+  import type { CloudAlignmentInfo, CloudBook, CloudLibrarySnapshot, CloudProgress, CloudQuotaStatus, LibraryManifest } from './types';
   import { cloudAddRequest$, cloudRefreshRequest$, cloudSort$, type CloudSortState } from './ui-state';
   import {
     CLOUD_PROGRESS_REVISION_KEY,
@@ -27,6 +27,7 @@
   let quota: CloudQuotaStatus | undefined;
   let progressByBook = new Map<string, CloudProgress>();
   let coverUrlByBook = new Map<string, string>();
+  let coverEtagByBook = new Map<string, string>();
 
   let loading = false;
   let error = '';
@@ -177,26 +178,8 @@
     status = 'Syncing cloud library…';
 
     try {
-      const [library, quotaStatus] = await Promise.all([api.getLibrary(), api.getQuota().catch(() => undefined)]);
-      manifest = library;
-      quota = quotaStatus;
-      const nextProgress = new Map<string, CloudProgress>();
-      const nextCovers = new Map<string, string>();
-
-      await Promise.all(
-        manifest.books.map(async (book) => {
-          const [progressResult, coverResult] = await Promise.all([
-            api!.getProgress(book.id).catch(() => ({})),
-            book.assets.cover ? api!.getSignedAssetUrl(book.id, 'cover').catch(() => '') : Promise.resolve('')
-          ]);
-
-          if (progressResult.progress) nextProgress.set(book.id, progressResult.progress);
-          if (coverResult) nextCovers.set(book.id, coverResult);
-        })
-      );
-
-      progressByBook = nextProgress;
-      coverUrlByBook = nextCovers;
+      const snapshot = await api.getLibrarySnapshot();
+      applyLibrarySnapshot(snapshot);
       status = '';
       await tick();
       updateShelfEdges();
@@ -213,6 +196,37 @@
     }
   }
 
+
+  function applyLibrarySnapshot(snapshot: CloudLibrarySnapshot) {
+    manifest = snapshot.library;
+    quota = snapshot.quota;
+
+    const nextProgress = new Map<string, CloudProgress>();
+    const nextCovers = new Map<string, string>();
+    const nextCoverEtags = new Map<string, string>();
+
+    for (const book of manifest.books) {
+      const progressSnapshot = snapshot.progress[book.id] || {};
+      if (progressSnapshot.progress) nextProgress.set(book.id, progressSnapshot.progress);
+      seedCloudProgressSession(book.id, progressSnapshot, api);
+
+      const coverEtag = book.assets.cover?.etag || '';
+      if (!book.assets.cover) continue;
+
+      const oldUrl = coverUrlByBook.get(book.id);
+      const oldEtag = coverEtagByBook.get(book.id);
+      // Keep the exact same signed URL while the cover object is unchanged so a
+      // routine refresh does not cause the browser to download the image again.
+      const coverUrl = oldUrl && oldEtag === coverEtag ? oldUrl : snapshot.coverUrls[book.id];
+      if (coverUrl) nextCovers.set(book.id, coverUrl);
+      nextCoverEtags.set(book.id, coverEtag);
+    }
+
+    progressByBook = nextProgress;
+    coverUrlByBook = nextCovers;
+    coverEtagByBook = nextCoverEtags;
+    lastRefreshAt = Date.now();
+  }
 
   async function onEpubChanged(event: Event) {
     const input = event.currentTarget as HTMLInputElement;
@@ -371,14 +385,22 @@
     status = `Opening ${book.title}…`;
 
     try {
-      const localBookId = await ensureCloudBookLocal(document, api, book, {
+      // Fetch one fresh bulk snapshot immediately before opening. This keeps the
+      // cloud copy authoritative even if another device moved since the manager
+      // was first rendered, without doing a progress request per title.
+      const freshSnapshot = await api.getLibrarySnapshot();
+      applyLibrarySnapshot(freshSnapshot);
+      const freshBook = freshSnapshot.library.books.find((candidate) => candidate.id === book.id) || book;
+      const progressSnapshot = freshSnapshot.progress[book.id] || {};
+      seedCloudProgressSession(book.id, progressSnapshot, api);
+
+      const localBookId = await ensureCloudBookLocal(document, api, freshBook, {
         onStatus: (message) => (status = message)
       });
-      linkCloudBook(book.id, localBookId, book.title);
+      linkCloudBook(book.id, localBookId, freshBook.title);
 
       status = 'Restoring reading position…';
-      const remoteProgress = progressByBook.get(book.id);
-      await applyRemoteReaderProgress(api, book.id, localBookId, remoteProgress);
+      await applyRemoteReaderProgress(api, book.id, localBookId, progressSnapshot);
       await database.putLastItem(localBookId);
       await goto(`${pagePath}/b?id=${localBookId}`);
     } catch (caught) {

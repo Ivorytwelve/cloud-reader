@@ -10,7 +10,7 @@ import {
 import { importData } from '$lib/functions/replication/replicator';
 import { TtsuCloudApi } from './api';
 import { getCloudLinkByCloudBookId, linkCloudBook } from './book-links';
-import type { CloudBook, CloudProgress, CloudReaderBookmark } from './types';
+import type { CloudBook, CloudProgress, CloudReaderBookmark, ProgressSnapshot } from './types';
 
 export interface EnsureCloudBookLocalOptions {
   epubFile?: File;
@@ -90,16 +90,11 @@ export async function applyRemoteReaderProgress(
   api: TtsuCloudApi,
   cloudBookId: string,
   localBookId: number,
-  knownProgress?: CloudProgress
+  knownSnapshot?: ProgressSnapshot
 ): Promise<CloudProgress | undefined> {
-  const remote = knownProgress || (await api.getProgress(cloudBookId)).progress;
+  const remote = knownSnapshot ? knownSnapshot.progress : (await api.getProgress(cloudBookId)).progress;
   const bookmark = remote?.reader?.bookmark;
   if (!bookmark) return remote;
-
-  const local = await database.getBookmark(localBookId);
-  const remoteModified = bookmark.lastBookmarkModified || remote.reader?.updatedAt || 0;
-  const localModified = local?.lastBookmarkModified || 0;
-  if (local && localModified > remoteModified) return remote;
 
   await database.putBookmark(toLocalBookmark(bookmark, localBookId));
   database.bookmarksChanged$.next();

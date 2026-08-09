@@ -79,6 +79,36 @@ export interface CloudProgress {
   updatedAt: number;
 }
 
+export interface ProgressSnapshot {
+  progress?: CloudProgress;
+  etag?: string;
+}
+
+export interface CloudQuotaStatus {
+  initialized: boolean;
+  usedBytes: number;
+  reservedBytes: number;
+  projectedBytes: number;
+  maxBytes: number;
+  remainingBytes: number;
+  activeUploads: number;
+  budgets: {
+    readsToday: number;
+    maxReadsPerDay: number;
+    writesToday: number;
+    maxWritesPerDay: number;
+  };
+}
+
+export interface CloudLibrarySnapshot {
+  version: 1;
+  generatedAt: number;
+  library: LibraryManifest;
+  quota: CloudQuotaStatus;
+  progress: Record<string, ProgressSnapshot>;
+  coverUrls: Record<string, string>;
+}
+
 export interface MultipartCompleteBody {
   parts: Array<{ partNumber: number; etag: string }>;
   fileName: string;

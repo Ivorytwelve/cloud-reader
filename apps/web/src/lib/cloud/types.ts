@@ -102,6 +102,16 @@ export interface ProgressSnapshot {
   etag?: string;
 }
 
+/** One-request view of the cloud library used by the manager. */
+export interface CloudLibrarySnapshot {
+  version: 1;
+  generatedAt: number;
+  library: LibraryManifest;
+  quota: CloudQuotaStatus;
+  progress: Record<string, ProgressSnapshot>;
+  coverUrls: Record<string, string>;
+}
+
 export interface CloudStatisticSnapshot {
   version: 1;
   deviceId: string;
