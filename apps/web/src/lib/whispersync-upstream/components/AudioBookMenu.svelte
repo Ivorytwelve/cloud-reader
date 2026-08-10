@@ -86,6 +86,7 @@
 	export let bookContentElement: HTMLDivElement;
 	export let sandboxElement: HTMLIFrameElement | undefined;
 	export let currentBookId: number;
+	export let cloudOnly = false;
 
 	const sideMenuWidthKey = 'ttu-whispersync-side-menu-width';
 	const supportsFileSystem = 'showOpenFilePicker' in window;
@@ -470,16 +471,17 @@
 			body = parseHTML(new DOMParser(), book.elementHtml);
 
 			const metadataElement = body.firstElementChild;
-			const [audioBook, subtitle, audioHandle, subtitleHandle] = await Promise.all([
-				$booksDB$.get('audioBook', book.title),
-				$booksDB$.get('subtitle', book.title),
-				...($filesystemApiEnabled$
-					? [
-							$booksDB$.get('handle', [book.title, 'audioBook']),
-							$booksDB$.get('handle', [book.title, 'subtitle']),
-						]
-					: []),
-			]);
+			const audioBook = cloudOnly ? undefined : await $booksDB$.get('audioBook', book.title);
+			const subtitle = await $booksDB$.get('subtitle', book.title);
+			let audioHandle;
+			let subtitleHandle;
+
+			if ($filesystemApiEnabled$ && !cloudOnly) {
+				[audioHandle, subtitleHandle] = await Promise.all([
+					$booksDB$.get('handle', [book.title, 'audioBook']),
+					$booksDB$.get('handle', [book.title, 'subtitle']),
+				]);
+			}
 
 			if (metadataElement instanceof HTMLElement) {
 				$bookMatched$ = {
@@ -498,11 +500,11 @@
 				lastAudio: audioHandle?.handle instanceof FileSystemFileHandle ? audioHandle.handle : undefined,
 				lastSubtitle:
 					subtitleHandle?.handle instanceof FileSystemFileHandle ? subtitleHandle.handle : undefined,
-				playbackPosition: audioBook?.playbackPosition || 0,
+				playbackPosition: cloudOnly ? 0 : audioBook?.playbackPosition || 0,
 				subtitleData: subtitle?.subtitleData,
 			};
 
-			$currentTime$ = audioBook?.playbackPosition || 0;
+			$currentTime$ = cloudOnly ? 0 : audioBook?.playbackPosition || 0;
 		} catch ({ message }: any) {
 			loadError = `Initialization failed: ${message}`;
 		}
@@ -517,6 +519,12 @@
 		}
 
 		await initializeComponentData();
+
+		if (cloudOnly) {
+			document.dispatchEvent(
+				new CustomEvent('ttu-cloud:whispersync-ready', { detail: { localBookId: currentBookId } }),
+			);
+		}
 	}
 
 	function onSkipKeyListener({ detail }: any) {
@@ -532,7 +540,7 @@
 			$isLoading$ = true;
 		}
 
-		if ($readerEnableAutoReload$ || forceLoad) {
+		if (!cloudOnly && ($readerEnableAutoReload$ || forceLoad)) {
 			await initializeFiles();
 		}
 

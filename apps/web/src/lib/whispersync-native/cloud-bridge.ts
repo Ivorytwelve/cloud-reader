@@ -6,7 +6,6 @@ import { get } from 'svelte/store';
 import { setAudioContext, setSubtitleContext, updateSubtitles } from '$lib/whispersync-upstream/lib/files';
 import {
   bookData$,
-  booksDB$,
   currentAudioSourceUrl$,
   currentCoverUrl$,
   currentRemoteAudioFileName$,
@@ -14,7 +13,8 @@ import {
   duration$,
   extensionData$,
   lastError$,
-  playbackRate$
+  playbackRate$,
+  pendingCloudResumeTime$
 } from '$lib/whispersync-upstream/lib/stores';
 import { TtsuCloudApi } from '$lib/cloud/api';
 import { getCloudLinkByLocalBookId, linkCloudBook } from '$lib/cloud/book-links';
@@ -72,27 +72,14 @@ export async function openCloudAudiobook(api: TtsuCloudApi, book: CloudBook): Pr
   const remoteProgress = session.sync.current;
   const resumeAt = remoteProgress?.audiobook?.seconds;
 
-  // Set the resume position before the audio element receives the new src.
-  // Player.svelte seeks to currentTime when loadedmetadata fires.
-  if (Number.isFinite(resumeAt)) {
-    const extensionData = get(extensionData$);
-    const playbackPosition = resumeAt!;
-
-    // Keep Whispersync's local audioBook cache in sync with the cloud resume
-    // point as well. This makes cloud the source of truth while allowing the
-    // upstream component to initialise naturally from the same value.
-    const db = get(booksDB$);
-    if (db && extensionData.title) {
-      await db.put('audioBook', {
-        title: extensionData.title,
-        playbackPosition,
-        lastAudioBookModified: Date.now()
-      });
-    }
-
-    currentTime$.set(playbackPosition);
-    extensionData$.set({ ...extensionData, playbackPosition });
-  }
+  // Cloud Reader is the only persistence source for remote audio. Keep the
+  // resume point in a dedicated one-shot store that cannot be overwritten by
+  // the new <audio> element's initial currentTime=0 binding.
+  const playbackPosition = Number.isFinite(resumeAt) ? resumeAt! : 0;
+  const extensionData = get(extensionData$);
+  pendingCloudResumeTime$.set(playbackPosition);
+  currentTime$.set(playbackPosition);
+  extensionData$.set({ ...extensionData, playbackPosition });
 
   if (remoteProgress?.audiobook?.playbackRate) playbackRate$.set(remoteProgress.audiobook.playbackRate);
 
@@ -179,6 +166,7 @@ export function clearCloudAudiobookSession(): void {
   lastCloudSaveAt = 0;
   if (activeCloudHasAudio) {
     currentRemoteAudioFileName$.set('');
+    pendingCloudResumeTime$.set(null);
     currentAudioSourceUrl$.set('');
     currentCoverUrl$.set('');
   }

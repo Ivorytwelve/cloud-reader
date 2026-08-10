@@ -60,6 +60,10 @@ export const currentAudioFile$ = writable<File | undefined>();
 
 export const currentRemoteAudioFileName$ = writable<string>('');
 
+// Cloud Reader owns remote audiobook persistence. This one-shot value survives
+// the audio element's initial 0-second binding and is consumed after metadata loads.
+export const pendingCloudResumeTime$ = writable<number | null>(null);
+
 export const currentCoverUrl$ = writable<string>('');
 
 export const currentAudioSourceUrl$ = writable<string>('');

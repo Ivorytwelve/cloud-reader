@@ -30,6 +30,7 @@
 		muted$,
 		paused$,
 		playbackRate$,
+		pendingCloudResumeTime$,
 		playLine$,
 		readerActionSubtitle$,
 		settings$,
@@ -68,6 +69,7 @@
 	// Cloud audio must not persist the element's default 0-second position before
 	// loadedmetadata has had a chance to restore the authoritative cloud time.
 	let audioMetadataReady = false;
+	let cloudInitialSeekPending = false;
 
 	// The recorder stack depends on Web Workers. Keep it out of SvelteKit SSR/prerender
 	// and load it only when the user actually records audio for an export.
@@ -386,19 +388,33 @@
 	}
 
 	async function onLoadedMetadata() {
-		// bind:currentTime can be set to 0 by a freshly-created audio element before
-		// metadata arrives. For cloud audio the separately hydrated extension-data
-		// value is the authoritative pending resume point.
-		const cloudResumeTime =
-			$currentRemoteAudioFileName$ && Number.isFinite($extensionData$.playbackPosition)
-				? $extensionData$.playbackPosition
-				: undefined;
-		const resumeTime = Number.isFinite(cloudResumeTime) ? cloudResumeTime! : $currentTime$;
+		const isCloudAudio = !!$currentRemoteAudioFileName$;
+		const resumeTime =
+			isCloudAudio && Number.isFinite($pendingCloudResumeTime$)
+				? $pendingCloudResumeTime$!
+				: $currentTime$;
 
 		if (Number.isFinite(resumeTime) && resumeTime >= 0) {
 			$currentTime$ = resumeTime;
 			audioElement.currentTime = resumeTime;
+
+			if (isCloudAudio) {
+				// Some browsers briefly report 0 again while the ranged media seek is
+				// settling. Keep startup events muted for one frame, then enforce the
+				// cloud position once more before allowing progress writes.
+				await tick();
+				await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+				if (Math.abs(audioElement.currentTime - resumeTime) > 0.25) {
+					audioElement.currentTime = resumeTime;
+				}
+				$currentTime$ = resumeTime;
+				$extensionData$.playbackPosition = resumeTime;
+				$extensionData$ = $extensionData$;
+				$pendingCloudResumeTime$ = null;
+			}
 		}
+
+		cloudInitialSeekPending = false;
 		audioMetadataReady = true;
 
 		if (!isIOS) {
@@ -468,7 +484,7 @@
 		// Ignore startup timeupdate/pause events for cloud audio until the initial
 		// loadedmetadata seek has completed. Otherwise 0 can overwrite both the
 		// in-memory resume point and the cloud progress we just loaded.
-		if ($currentRemoteAudioFileName$ && !audioMetadataReady) return;
+		if ($currentRemoteAudioFileName$ && (!audioMetadataReady || cloudInitialSeekPending)) return;
 		if ($exportCancelController$?.signal.aborted) {
 			await stopAudioRecording($exportAudioBitrate$, true).catch(() => {
 				// no-op
@@ -539,20 +555,25 @@
 		try {
 			const playbackPosition = $currentTime$;
 
-			await $booksDB$.put('audioBook', {
-				playbackPosition,
-				title: $extensionData$.title,
-				lastAudioBookModified: Date.now(),
-			});
-
 			$extensionData$.playbackPosition = playbackPosition;
 
-			document.dispatchEvent(new CustomEvent('ttu-action', { detail: { type: 'sync', syncType: 'audioBook' } }));
-			document.dispatchEvent(
-				new CustomEvent('ttu-cloud:audiobook-progress', {
-					detail: { seconds: playbackPosition, duration: $duration$, playbackRate: $playbackRate$, paused: $paused$ },
-				}),
-			);
+			if ($currentRemoteAudioFileName$) {
+				// Cloud Reader persists remote playback directly. Do not involve the
+				// upstream local audioBook table or its sync events.
+				document.dispatchEvent(
+					new CustomEvent('ttu-cloud:audiobook-progress', {
+						detail: { seconds: playbackPosition, duration: $duration$, playbackRate: $playbackRate$, paused: $paused$ },
+					}),
+				);
+			} else {
+				await $booksDB$.put('audioBook', {
+					playbackPosition,
+					title: $extensionData$.title,
+					lastAudioBookModified: Date.now(),
+				});
+
+				document.dispatchEvent(new CustomEvent('ttu-action', { detail: { type: 'sync', syncType: 'audioBook' } }));
+			}
 		} catch ({ message }: any) {
 			$lastError$ = `Failed to update current time: ${message}`;
 		}

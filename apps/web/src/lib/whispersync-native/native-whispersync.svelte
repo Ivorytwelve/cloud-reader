@@ -18,6 +18,7 @@
     let saveCloudAudiobookProgress:
       | ((force?: boolean) => Promise<void>)
       | undefined;
+    let removeReadyListener: (() => void) | undefined;
 
     const initialise = async () => {
       try {
@@ -51,12 +52,25 @@
             '--ttu-whispersync-background-color',
             bodyStyle.backgroundColor || 'transparent'
           );
-          mounted = true;
+          let cloudOpened = false;
+          const onWhispersyncReady = (event: Event) => {
+            const detail = (event as CustomEvent<{ localBookId?: number }>).detail;
+            if (cloudOpened || detail?.localBookId !== currentBookId) return;
+            cloudOpened = true;
+            document.removeEventListener('ttu-cloud:whispersync-ready', onWhispersyncReady);
 
-          void bridgeModule.autoOpenCloudAudiobookForLocalBook(currentBookId).catch((error) => {
-            const message = error instanceof Error ? error.message : String(error);
-            storesModule.lastError$.set(`Cloud audiobook failed: ${message}`);
-          });
+            void bridgeModule.autoOpenCloudAudiobookForLocalBook(currentBookId).catch((error) => {
+              const message = error instanceof Error ? error.message : String(error);
+              storesModule.lastError$.set(`Cloud audiobook failed: ${message}`);
+            });
+          };
+
+          // Register before mounting: AudioBookMenu emits this only after its own
+          // database/subtitle initialization is completely finished.
+          document.addEventListener('ttu-cloud:whispersync-ready', onWhispersyncReady);
+          removeReadyListener = () =>
+            document.removeEventListener('ttu-cloud:whispersync-ready', onWhispersyncReady);
+          mounted = true;
         };
 
         findBookContent();
@@ -78,6 +92,7 @@
       const savePromise = saveCloudAudiobookProgress?.(true);
       if (savePromise) void savePromise.catch(() => undefined);
 
+      removeReadyListener?.();
       removeCloudProgressEvents?.();
       clearCloudAudiobookSession?.();
     };
@@ -99,6 +114,7 @@
       {bookContentElement}
       sandboxElement={undefined}
       {currentBookId}
+      cloudOnly={true}
     />
   {/if}
 </div>
