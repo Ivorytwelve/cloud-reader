@@ -27,8 +27,8 @@ MAX_WRITE_OPS_PER_MINUTE = "120"
 MAX_READ_OPS_PER_MINUTE = "600"
 
 # Incomplete multipart uploads are reserved against the hard quota immediately.
-# The Durable Object aborts abandoned uploads after 24 hours.
-MULTIPART_RESERVATION_TTL_SECONDS = "86400"
+# The Durable Object aborts abandoned uploads after 30 minutes with no completed part.
+MULTIPART_RESERVATION_TTL_SECONDS = "1800"
 
 # Set secrets with:
 # npx wrangler secret put AUTH_TOKEN

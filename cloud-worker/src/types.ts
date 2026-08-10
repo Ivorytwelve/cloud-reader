@@ -126,6 +126,7 @@ export interface CloudStatisticSnapshot {
   charactersRead: number;
   lastStatisticModified: number;
   completedBook?: number;
+  clearCompletion?: boolean;
   completedData?: {
     dateKey: string;
     charactersRead: number;

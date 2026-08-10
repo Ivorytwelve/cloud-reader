@@ -7,6 +7,7 @@ export interface QuotaReservation {
   oldSize: number;
   reservedBytes: number;
   createdAt: number;
+  lastActivityAt?: number;
   expiresAt: number;
   uploadId?: string;
   parts: Record<string, number>;
@@ -135,7 +136,10 @@ export class QuotaGuard {
   }
 
   private get reservationTtlMs(): number {
-    return positiveInt(this.env.MULTIPART_RESERVATION_TTL_SECONDS, 24 * 60 * 60) * 1000;
+    // Reservations only need to survive between multipart chunks. Every completed
+    // part refreshes the activity timestamp, so 30 minutes of inactivity is ample
+    // while avoiding a phantom '+ uploading' reservation for an entire day.
+    return positiveInt(this.env.MULTIPART_RESERVATION_TTL_SECONDS, 30 * 60) * 1000;
   }
 
   private normalizeCounters(now: number): void {
@@ -170,6 +174,32 @@ export class QuotaGuard {
       return;
     }
     await this.state.storage.setAlarm(Math.min(...expiries));
+  }
+
+  private async cleanupReservations(force = false): Promise<boolean> {
+    const now = Date.now();
+    let changed = false;
+
+    for (const reservation of Object.values(this.data.reservations)) {
+      const lastActivity = reservation.lastActivityAt ?? reservation.createdAt;
+      if (!force && lastActivity + this.reservationTtlMs > now) continue;
+
+      if (reservation.uploadId) {
+        try {
+          await this.env.LIBRARY.resumeMultipartUpload(reservation.key, reservation.uploadId).abort();
+        } catch {
+          // It may already be complete/aborted. The reservation still needs to go.
+        }
+      }
+      delete this.data.reservations[reservation.id];
+      changed = true;
+    }
+
+    if (changed) {
+      await this.persist();
+      await this.scheduleCleanup();
+    }
+    return changed;
   }
 
   private status() {
@@ -225,6 +255,7 @@ export class QuotaGuard {
 
     if (request.method === 'GET' && path === '/status') {
       this.normalizeCounters(Date.now());
+      await this.cleanupReservations(false);
       return json(this.status());
     }
 
@@ -296,6 +327,7 @@ export class QuotaGuard {
         oldSize,
         reservedBytes,
         createdAt: now,
+        lastActivityAt: now,
         expiresAt: now + this.reservationTtlMs,
         parts: {},
         uploadedBytes: 0,
@@ -310,7 +342,10 @@ export class QuotaGuard {
       const reservation = body.id ? this.data.reservations[body.id] : undefined;
       if (!reservation || !body.uploadId) return json({ error: 'Reservation not found' }, 404);
       reservation.uploadId = body.uploadId;
+      reservation.lastActivityAt = Date.now();
+      reservation.expiresAt = reservation.lastActivityAt + this.reservationTtlMs;
       await this.persist();
+      await this.scheduleCleanup();
       return json({ ok: true });
     }
 
@@ -330,7 +365,8 @@ export class QuotaGuard {
       }
       reservation.parts[String(partNumber)] = size;
       reservation.uploadedBytes = nextTotal;
-      reservation.expiresAt = Date.now() + this.reservationTtlMs;
+      reservation.lastActivityAt = Date.now();
+      reservation.expiresAt = reservation.lastActivityAt + this.reservationTtlMs;
       await this.persist();
       await this.scheduleCleanup();
       return json({ uploadedBytes: nextTotal, expectedBytes: reservation.newSize });
@@ -400,6 +436,12 @@ export class QuotaGuard {
       return json(this.status());
     }
 
+    if (request.method === 'POST' && path === '/cleanup') {
+      const body = (await request.json().catch(() => ({}))) as { force?: boolean };
+      await this.cleanupReservations(body.force === true);
+      return json(this.status());
+    }
+
     if (request.method === 'POST' && path === '/adjust-used') {
       const body = (await request.json()) as { delta?: number };
       const delta = Number(body.delta);
@@ -415,19 +457,7 @@ export class QuotaGuard {
   async alarm(): Promise<void> {
     await this.ready;
     const now = Date.now();
-    let changed = false;
-    for (const reservation of Object.values(this.data.reservations)) {
-      if (reservation.expiresAt > now) continue;
-      if (reservation.uploadId) {
-        try {
-          await this.env.LIBRARY.resumeMultipartUpload(reservation.key, reservation.uploadId).abort();
-        } catch {
-          // It may already be complete/aborted. The reservation still expires.
-        }
-      }
-      delete this.data.reservations[reservation.id];
-      changed = true;
-    }
+    let changed = await this.cleanupReservations(false);
 
     const stalePending = Object.values(this.data.pendingCommits).some(
       (item) => item.startedAt + PENDING_COMMIT_RECONCILE_MS <= now,

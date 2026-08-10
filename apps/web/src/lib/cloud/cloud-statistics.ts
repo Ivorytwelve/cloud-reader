@@ -7,6 +7,7 @@ import { getOrCreateDeviceId } from './progress-sync';
 import type { CloudStatisticAggregate, CloudStatisticSnapshot } from './types';
 
 const CONTRIBUTIONS_KEY = 'ttu-cloud-stat-contributions-v1';
+const CLOUD_STATS_TITLES_KEY = 'ttu-cloud-stat-titles-v1';
 const pendingUploads = new Map<string, Promise<void>>();
 let uploadTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -143,15 +144,29 @@ export async function syncCloudStatisticsToLocal(): Promise<CloudStatisticAggreg
     byTitle.set(stat.title, list);
   }
 
+  let previousTitles: string[] = [];
+  if (typeof localStorage !== 'undefined') {
+    try {
+      previousTitles = JSON.parse(localStorage.getItem(CLOUD_STATS_TITLES_KEY) || '[]') as string[];
+    } catch {
+      previousTitles = [];
+    }
+  }
+
+  const allTitles = new Set([...previousTitles, ...byTitle.keys()]);
   await Promise.all(
-    [...byTitle.entries()].map(([title, statistics]) =>
+    [...allTitles].map((title) =>
       database.storeStatistics(
         title,
-        statistics,
+        byTitle.get(title) || [],
         ReplicationSaveBehavior.Overwrite,
         MergeMode.REPLACE
       )
     )
   );
+
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem(CLOUD_STATS_TITLES_KEY, JSON.stringify([...byTitle.keys()]));
+  }
   return cloudStats;
 }

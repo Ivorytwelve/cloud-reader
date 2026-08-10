@@ -5,6 +5,7 @@
     faCopy,
     faFilter,
     faMap,
+    faPenToSquare,
     faSliders
   } from '@fortawesome/free-solid-svg-icons';
   import { mergeEntries } from '$lib/components/merged-header-icon/merged-entries';
@@ -25,6 +26,7 @@
 
   export let currentBookId: number | undefined;
   export let showStatisticsSettings: boolean;
+  export let showCloudStatisticsEditor: boolean;
 
   const copyStatisticsDataItems: StatisticsDataSource[] = [
     { key: 'readingTime', label: 'Reading Time' },
@@ -104,6 +106,16 @@
         on:keyup={dummyFn}
       >
         <Fa icon={faFilter} />
+      </div>
+      <div
+        tabindex="0"
+        role="button"
+        title="Edit cloud statistics"
+        class={baseIconClasses}
+        on:click={() => (showCloudStatisticsEditor = true)}
+        on:keyup={dummyFn}
+      >
+        <Fa icon={faPenToSquare} />
       </div>
       <div
         tabindex="0"

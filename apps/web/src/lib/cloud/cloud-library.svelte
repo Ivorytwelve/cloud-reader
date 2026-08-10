@@ -65,6 +65,8 @@
   let uploadLabel = '';
   let uploadDone = 0;
   let uploadTotal = 0;
+  let uploadInput: HTMLInputElement | undefined;
+  let uploadDropActive = false;
 
   $: libraryBooks = sortCloudBooks(
     manifest.books.filter((book) => book.shelf !== 'history'),
@@ -230,9 +232,8 @@
     lastRefreshAt = Date.now();
   }
 
-  async function onEpubChanged(event: Event) {
-    const input = event.currentTarget as HTMLInputElement;
-    epubFile = input.files?.[0];
+  async function setEpubFile(file: File | undefined) {
+    epubFile = file;
     coverFile = undefined;
     epubElementHtml = '';
     lastAlignmentInfo = undefined;
@@ -258,15 +259,73 @@
     }
   }
 
-  function onAudioChanged(event: Event) {
-    audioFile = (event.currentTarget as HTMLInputElement).files?.[0];
+  function setAudioFile(file: File | undefined) {
+    audioFile = file;
     audioCoverFile = undefined;
   }
 
-  function onSubtitleChanged(event: Event) {
-    subtitleFile = (event.currentTarget as HTMLInputElement).files?.[0];
+  function setSubtitleFile(file: File | undefined) {
+    subtitleFile = file;
     lastAlignmentInfo = undefined;
     alignmentWarning = '';
+  }
+
+  async function acceptUploadFiles(files: FileList | File[]) {
+    const selected = Array.from(files);
+    if (!selected.length || uploading) return;
+
+    let nextEpub: File | undefined;
+    let nextAudio: File | undefined;
+    let nextSubtitles: File | undefined;
+    const ignored: string[] = [];
+
+    for (const file of selected) {
+      if (isEpubFile(file)) {
+        nextEpub = nextEpub || file;
+      } else if (isAudioFile(file)) {
+        nextAudio = nextAudio || file;
+      } else if (isSubtitleFile(file)) {
+        nextSubtitles = nextSubtitles || file;
+      } else {
+        ignored.push(file.name);
+      }
+    }
+
+    if (nextAudio) setAudioFile(nextAudio);
+    if (nextSubtitles) setSubtitleFile(nextSubtitles);
+    if (nextEpub) await setEpubFile(nextEpub);
+
+    if (!nextEpub && !nextAudio && !nextSubtitles) {
+      error = 'No supported EPUB, audiobook, or subtitle file was detected.';
+    } else if (ignored.length) {
+      error = `Ignored unsupported file${ignored.length === 1 ? '' : 's'}: ${ignored.join(', ')}`;
+    } else {
+      error = '';
+    }
+  }
+
+  function onUploadInput(event: Event) {
+    const files = (event.currentTarget as HTMLInputElement).files;
+    if (files) void acceptUploadFiles(files);
+    (event.currentTarget as HTMLInputElement).value = '';
+  }
+
+  function onUploadDrop(event: DragEvent) {
+    event.preventDefault();
+    uploadDropActive = false;
+    if (event.dataTransfer?.files?.length) void acceptUploadFiles(event.dataTransfer.files);
+  }
+
+  function isEpubFile(file: File) {
+    return file.type === 'application/epub+zip' || /\.epub$/i.test(file.name);
+  }
+
+  function isAudioFile(file: File) {
+    return file.type.startsWith('audio/') || /\.(m4b|m4a|mp3|aac|flac|ogg|opus|wav)$/i.test(file.name);
+  }
+
+  function isSubtitleFile(file: File) {
+    return /\.(srt|vtt|txt)$/i.test(file.name) || file.type === 'text/vtt';
   }
 
   async function uploadBook() {
@@ -600,6 +659,8 @@
     uploadLabel = '';
     uploadDone = 0;
     uploadTotal = 0;
+    uploadDropActive = false;
+    if (uploadInput) uploadInput.value = '';
   }
 
   function progressPercent(book: CloudBook): number {
@@ -656,7 +717,7 @@
   }
 </script>
 
-<section class="cloud-library-shell relative z-[1] grid h-full min-h-0 grid-rows-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2 py-2">
+<section class="cloud-library-shell relative z-[1] grid h-full min-h-0 min-w-0 grid-rows-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2 overflow-hidden py-2">
   {#if showUpload && api}
     <div class="absolute inset-0 z-30 flex items-start justify-center bg-[#E3F2FD]/85 px-2 pt-3 backdrop-blur-[2px]">
       <div class="w-full max-w-3xl rounded-2xl border border-[#90CAF9] bg-[#F7FBFF] p-4 shadow-xl">
@@ -670,19 +731,41 @@
           </button>
         </div>
 
-        <div class="grid gap-3 md:grid-cols-2">
-          <label class="text-xs">
-            <span class="mb-1 block opacity-70">EPUB</span>
-            <input type="file" accept="application/epub+zip,.epub" on:change={(event) => void onEpubChanged(event)} disabled={uploading} />
-          </label>
-          <label class="text-xs">
-            <span class="mb-1 block opacity-70">Audiobook (optional)</span>
-            <input type="file" accept="audio/*,.m4b,.m4a,.mp3,.aac,.flac,.ogg,.opus" on:change={onAudioChanged} disabled={uploading} />
-          </label>
-          <label class="text-xs">
-            <span class="mb-1 block opacity-70">Subtitles (optional)</span>
-            <input type="file" accept=".srt,.vtt,.txt,text/plain,text/vtt" on:change={onSubtitleChanged} disabled={uploading} />
-          </label>
+        <div class="grid gap-3">
+          <input
+            class="hidden"
+            bind:this={uploadInput}
+            type="file"
+            multiple
+            accept="application/epub+zip,.epub,audio/*,.m4b,.m4a,.mp3,.aac,.flac,.ogg,.opus,.wav,.srt,.vtt,.txt,text/plain,text/vtt"
+            on:change={onUploadInput}
+            disabled={uploading}
+          />
+          <button
+            type="button"
+            class="min-h-28 rounded-2xl border-2 border-dashed px-4 py-4 text-left transition {uploadDropActive ? 'border-[#2196F3] bg-[#90CAF9]/20' : 'border-[#90CAF9] bg-white/45'}"
+            on:click={() => uploadInput?.click()}
+            on:dragenter|preventDefault={() => (uploadDropActive = true)}
+            on:dragover|preventDefault={() => (uploadDropActive = true)}
+            on:dragleave={() => (uploadDropActive = false)}
+            on:drop={onUploadDrop}
+            disabled={uploading}
+          >
+            <div class="font-medium">Drop your book files here, or click to choose them</div>
+            <div class="mt-1 text-xs opacity-60">Cloud Reader automatically detects the EPUB, audiobook, and subtitle file.</div>
+            <div class="mt-3 grid gap-1.5 text-xs sm:grid-cols-3">
+              <div class="truncate rounded-lg bg-white/60 px-2 py-1.5" title={epubFile?.name || ''}>
+                <span class="font-medium">EPUB</span> · {epubFile?.name || 'not selected'}
+              </div>
+              <div class="truncate rounded-lg bg-white/60 px-2 py-1.5" title={audioFile?.name || ''}>
+                <span class="font-medium">Audio</span> · {audioFile?.name || 'optional'}
+              </div>
+              <div class="truncate rounded-lg bg-white/60 px-2 py-1.5" title={subtitleFile?.name || ''}>
+                <span class="font-medium">Subs</span> · {subtitleFile?.name || 'optional'}
+              </div>
+            </div>
+          </button>
+
           <div class="grid grid-cols-2 gap-2">
             <label class="text-xs">
               <span class="mb-1 block opacity-70">Title</span>
@@ -720,14 +803,14 @@
     </div>
   {/if}
 
-  <div class="cloud-shelf min-h-0">
-    <div class="mb-1.5 flex items-center gap-2 px-0.5">
+  <div class="cloud-shelf min-h-0 min-w-0">
+    <div class="cloud-shelf-header mb-1.5 flex items-center gap-2 px-0.5">
       <h2 class="text-sm font-semibold">Library</h2>
       <span class="text-xs opacity-45">{libraryBooks.length}</span>
     </div>
 
     {#if api && libraryBooks.length}
-      <div class="min-h-0 flex-1 overflow-hidden">
+      <div class="cloud-shelf-viewport min-h-0 min-w-0 flex-1 overflow-hidden">
         <div
           class="cloud-shelf-scroll {shelfMaskClass(libraryFadeLeft, libraryFadeRight)} flex h-full gap-3 overflow-x-auto overflow-y-hidden py-1 pr-1"
           bind:this={libraryScroller}
@@ -797,14 +880,14 @@
     {/if}
   </div>
 
-  <div class="cloud-shelf min-h-0 border-t border-[#90CAF9]/35 pt-2">
-    <div class="mb-1.5 flex items-center gap-2 px-0.5">
+  <div class="cloud-shelf min-h-0 min-w-0 border-t border-[#90CAF9]/35 pt-2">
+    <div class="cloud-shelf-header mb-1.5 flex items-center gap-2 px-0.5">
       <h2 class="text-sm font-semibold">Reading history</h2>
       <span class="text-xs opacity-45">{historyBooks.length}</span>
     </div>
 
     {#if api && historyBooks.length}
-      <div class="min-h-0 flex-1 overflow-hidden">
+      <div class="cloud-shelf-viewport min-h-0 min-w-0 flex-1 overflow-hidden">
         <div
           class="cloud-shelf-scroll {shelfMaskClass(historyFadeLeft, historyFadeRight)} flex h-full gap-3 overflow-x-auto overflow-y-hidden py-1 pr-1"
           bind:this={historyScroller}
@@ -901,14 +984,29 @@
 <style>
   .cloud-shelf {
     display: flex;
+    min-width: 0;
     flex-direction: column;
     overflow: hidden;
   }
 
+  .cloud-shelf-header {
+    flex: 0 0 auto;
+  }
+
+  .cloud-shelf-viewport {
+    width: 100%;
+    min-width: 0;
+  }
+
   .cloud-shelf-scroll {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     scrollbar-width: none;
-    overscroll-behavior-inline: contain;
+    -ms-overflow-style: none;
+    overscroll-behavior-x: contain;
     scroll-behavior: smooth;
+    touch-action: pan-x;
   }
 
   .cloud-shelf-scroll::-webkit-scrollbar {

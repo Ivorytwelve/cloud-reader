@@ -5,10 +5,7 @@
     faRightLong,
     faXmark
   } from '@fortawesome/free-solid-svg-icons';
-  import ButtonToggleGroup from '$lib/components/button-toggle-group/button-toggle-group.svelte';
-  import { optionsForToggle } from '$lib/components/button-toggle-group/toggle-option';
   import Popover from '$lib/components/popover/popover.svelte';
-  import SettingsItemGroup from '$lib/components/settings/settings-item-group.svelte';
   import {
     type StatisticsDateChange,
     statisticsRangeTemplates,
@@ -18,13 +15,11 @@
     statisticsDataAggregrationModes,
     exportStatisticsData$,
     statisticsActionInProgress$,
-    deleteStatisticsData$,
     setStatisticsDatesToAllTime$
   } from '$lib/components/statistics/statistics-types';
   import { daysOfWeek } from '$lib/components/statistics/statistics-heatmap/statistics-heatmap';
   import { dialogManager } from '$lib/data/dialog-manager';
   import {
-    confirmStatisticsDeletion$,
     lastCharactersDataSource$,
     lastPrimaryReadingDataAggregationMode$,
     lastReadingSpeedDataSource$,
@@ -65,28 +60,20 @@
     exportStatisticsData$.next(exportAllStatisticsData);
   }
 
-  async function deleteStatisticsData(deleteAllStatisticsData = true) {
-    $statisticsActionInProgress$ = true;
-
-    deleteStatisticsData$.next(deleteAllStatisticsData);
-  }
 </script>
 
 <div class="flex items-center p-4">
   <button class="flex items-end md:items-center" on:click={() => dispatch('close')}>
     <Fa icon={faXmark} />
   </button>
-  <div class="flex flex-1 justify-end">
-    <button class="mr-2 sm:mr-4 hover:text-red-500" on:click={() => exportStatisticsData(false)}>
+  <div class="flex flex-1 items-center justify-end gap-3">
+    <span class="hidden text-xs opacity-60 sm:inline">Use the pencil icon in the Statistics bar to edit/delete cloud data.</span>
+    <button class="hover:text-[#90CAF9]" on:click={() => exportStatisticsData(false)}>
       Export Selection
     </button>
-    <button class="mr-2 sm:mr-4 hover:text-red-500" on:click={() => deleteStatisticsData(false)}>
-      Delete Selection
-    </button>
-    <button class="mr-2 sm:mr-4 hover:text-red-500" on:click={() => exportStatisticsData()}>
+    <button class="hover:text-[#90CAF9]" on:click={() => exportStatisticsData()}>
       Export All
     </button>
-    <button class="hover:text-red-500" on:click={() => deleteStatisticsData()}>Delete All</button>
   </div>
 </div>
 <div class="flex-1 p-4 overflow-auto">
@@ -245,14 +232,5 @@
         </option>
       {/each}
     </select>
-  </div>
-  <div class="mt-4">
-    <SettingsItemGroup title="Confirm Statistics Deletion" applyHeaderClasses={false}>
-      <ButtonToggleGroup
-        invertColors
-        options={optionsForToggle}
-        bind:selectedOptionId={$confirmStatisticsDeletion$}
-      />
-    </SettingsItemGroup>
   </div>
 </div>

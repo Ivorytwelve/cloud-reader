@@ -18,3 +18,7 @@ All routes except `/health` and signed asset GET/HEAD reads require `Authorizati
 - `PUT /v1/progress/:id` — save progress; optionally send `If-Match` with the previous ETag.
 
 Asset kinds: `epub`, `audio`, `subtitles`, `cover`, `audioCover`, `alignment`.
+- `GET /v1/stats` — aggregate cloud statistics across devices.
+- `PUT /v1/stats/snapshot/:deviceId/:bookId/:date` — write an absolute per-device/day statistics contribution.
+- `PUT /v1/stats/entry/:bookId/:date` — edit the canonical aggregate for one book/day by writing a manual adjustment.
+- `DELETE /v1/stats/entry/:bookId/:date` — remove the current aggregate for one book/day; later reading can add new data again.

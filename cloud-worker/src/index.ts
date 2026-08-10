@@ -181,6 +181,7 @@ function progressKey(bookId: string): string {
 }
 
 const STATS_PREFIX = '_stats/devices/';
+const MANUAL_STATS_DEVICE_ID = '_manual';
 const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function statsSnapshotKey(deviceId: string, bookId: string, dateKey: string): string {
@@ -227,6 +228,7 @@ function sanitizeStatisticSnapshot(
     charactersRead: sanitizeFiniteNumber(input.charactersRead),
     lastStatisticModified: Math.max(0, Math.floor(sanitizeFiniteNumber(input.lastStatisticModified, Date.now()))),
     ...(completedBook ? { completedBook } : {}),
+    ...(input.clearCompletion ? { clearCompletion: true } : {}),
     ...(completedData ? { completedData } : {}),
   };
 }
@@ -257,6 +259,7 @@ async function readStatisticSnapshots(env: Env): Promise<CloudStatisticSnapshot[
 
 function aggregateStatisticSnapshots(snapshots: CloudStatisticSnapshot[]): CloudStatisticAggregate[] {
   const aggregates = new Map<string, CloudStatisticAggregate>();
+  const completionCleared = new Set<string>();
 
   for (const snapshot of snapshots) {
     const key = `${snapshot.bookId}\u0000${snapshot.dateKey}`;
@@ -281,13 +284,18 @@ function aggregateStatisticSnapshots(snapshots: CloudStatisticSnapshot[]): Cloud
     aggregate.readingTime += snapshot.readingTime;
     aggregate.charactersRead += snapshot.charactersRead;
     aggregate.lastStatisticModified = Math.max(aggregate.lastStatisticModified, snapshot.lastStatisticModified);
+    if (snapshot.clearCompletion) completionCleared.add(key);
     if (snapshot.completedBook) aggregate.completedBook = 1;
     if (snapshot.completedData && snapshot.lastStatisticModified >= aggregate.lastStatisticModified) {
       aggregate.completedData = snapshot.completedData;
     }
   }
 
-  for (const aggregate of aggregates.values()) {
+  for (const [key, aggregate] of aggregates.entries()) {
+    if (completionCleared.has(key)) {
+      delete aggregate.completedBook;
+      delete aggregate.completedData;
+    }
     aggregate.readingTime = Math.max(0, Math.round(aggregate.readingTime * 1000) / 1000);
     aggregate.charactersRead = Math.max(0, Math.round(aggregate.charactersRead));
     const speed = aggregate.readingTime > 0
@@ -299,9 +307,45 @@ function aggregateStatisticSnapshots(snapshots: CloudStatisticSnapshot[]): Cloud
     aggregate.maxReadingSpeed = speed;
   }
 
-  return [...aggregates.values()].sort((a, b) =>
-    a.dateKey === b.dateKey ? a.title.localeCompare(b.title) : a.dateKey.localeCompare(b.dateKey)
-  );
+  return [...aggregates.values()]
+    .filter((entry) => entry.readingTime > 0 || entry.charactersRead > 0 || entry.completedBook || entry.completedData)
+    .sort((a, b) =>
+      a.dateKey === b.dateKey ? a.title.localeCompare(b.title) : a.dateKey.localeCompare(b.dateKey)
+    );
+}
+
+async function setStatisticAggregateTarget(
+  env: Env,
+  bookId: string,
+  dateKey: string,
+  input: { title?: string; readingTime: number; charactersRead: number; clearCompletion?: boolean },
+): Promise<CloudStatisticAggregate | undefined> {
+  const all = await readStatisticSnapshots(env);
+  const matching = all.filter((snapshot) => snapshot.bookId === bookId && snapshot.dateKey === dateKey);
+  const nonManual = matching.filter((snapshot) => snapshot.deviceId !== MANUAL_STATS_DEVICE_ID);
+  const title = String(input.title || matching.find((snapshot) => snapshot.title)?.title || '').trim().slice(0, 500);
+  if (!title) throw new HttpError(400, { error: 'Statistic title is required' });
+
+  const baseReadingTime = nonManual.reduce((sum, snapshot) => sum + snapshot.readingTime, 0);
+  const baseCharactersRead = nonManual.reduce((sum, snapshot) => sum + snapshot.charactersRead, 0);
+  const manual: CloudStatisticSnapshot = {
+    version: 1,
+    deviceId: MANUAL_STATS_DEVICE_ID,
+    bookId,
+    title,
+    dateKey,
+    readingTime: Math.max(0, input.readingTime) - baseReadingTime,
+    charactersRead: Math.max(0, input.charactersRead) - baseCharactersRead,
+    lastStatisticModified: Date.now(),
+    ...(input.clearCompletion ? { clearCompletion: true } : {}),
+  };
+
+  await consumeBudget(env, 'write', 1);
+  await env.LIBRARY.put(statsSnapshotKey(MANUAL_STATS_DEVICE_ID, bookId, dateKey), JSON.stringify(manual), {
+    httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
+  });
+
+  return aggregateStatisticSnapshots([...nonManual, manual])[0];
 }
 
 function quotaStub(env: Env): DurableObjectStubLike {
@@ -611,6 +655,13 @@ async function route(request: Request, env: Env): Promise<Response> {
     return json(await ensureQuotaInitialized(env));
   }
 
+  if (request.method === 'POST' && url.pathname === '/v1/uploads/cleanup') {
+    await consumeBudget(env, 'write', 1);
+    await ensureQuotaInitialized(env);
+    const body = (await request.json().catch(() => ({}))) as { force?: boolean };
+    return json(await quotaCall<QuotaStatus>(env, '/cleanup', { force: body.force === true }));
+  }
+
   if (request.method === 'GET' && url.pathname === '/v1/library/snapshot') {
     // Charge the manifest read before touching R2, then account for the progress
     // objects after we know how many books are present.
@@ -881,6 +932,33 @@ async function route(request: Request, env: Env): Promise<Response> {
         httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
       });
       return json(snapshot);
+    }
+  }
+
+  if (parts[0] === 'v1' && parts[1] === 'stats' && parts[2] === 'entry' && parts.length === 5) {
+    const bookId = parts[3];
+    const dateKey = parts[4];
+    if (!safeId(bookId) || !DATE_KEY_RE.test(dateKey)) {
+      return json({ error: 'Invalid statistics entry path' }, 400);
+    }
+
+    if (request.method === 'PUT') {
+      const input = await readJsonLimited<{ title?: string; readingTime?: number; charactersRead?: number }>(request);
+      const entry = await setStatisticAggregateTarget(env, bookId, dateKey, {
+        title: input.title,
+        readingTime: Math.max(0, sanitizeFiniteNumber(input.readingTime)),
+        charactersRead: Math.max(0, sanitizeFiniteNumber(input.charactersRead)),
+      });
+      return entry ? json(entry) : new Response(null, { status: 204 });
+    }
+
+    if (request.method === 'DELETE') {
+      await setStatisticAggregateTarget(env, bookId, dateKey, {
+        readingTime: 0,
+        charactersRead: 0,
+        clearCompletion: true,
+      });
+      return new Response(null, { status: 204 });
     }
   }
 

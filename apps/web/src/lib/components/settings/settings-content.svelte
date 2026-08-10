@@ -986,6 +986,13 @@
       </SettingsItemGroup>
     {/if}
   {:else}
+    <div class="sm:col-span-2 lg:col-span-3 rounded-xl border border-[#90CAF9]/70 bg-[#E3F2FD]/55 px-3 py-2 text-sm">
+      <div class="font-medium">Cloud audiobook statistics</div>
+      <div class="mt-1 text-xs opacity-65">
+        The cloud is canonical; IndexedDB is only a local display/cache. For cloud audiobooks the settings that directly affect tracking are Enable Statistics, Start Day Hours, Include Short Audiobook Pauses, Short Pause Limit, and the Forward/Backward Skip Thresholds. The remaining tracker controls are inherited from Ttsu and mainly apply to ebook-only/classic tracking.
+      </div>
+    </div>
+
     <SettingsItemGroup
       title="Keep Local Data on Deletion"
       tooltip={'Determines if local statistics will be deleted or not when removing a local book copy'}

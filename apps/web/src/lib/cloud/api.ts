@@ -296,6 +296,25 @@ export class TtsuCloudApi {
     ).data;
   }
 
+  async updateStatisticEntry(
+    bookId: string,
+    dateKey: string,
+    entry: Pick<CloudStatisticAggregate, 'title' | 'readingTime' | 'charactersRead'>,
+  ): Promise<CloudStatisticAggregate | undefined> {
+    const path = `/v1/stats/entry/${encodeURIComponent(bookId)}/${encodeURIComponent(dateKey)}`;
+    const response = await this.request<CloudStatisticAggregate>(path, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(entry),
+    });
+    return response.data;
+  }
+
+  async deleteStatisticEntry(bookId: string, dateKey: string): Promise<void> {
+    const path = `/v1/stats/entry/${encodeURIComponent(bookId)}/${encodeURIComponent(dateKey)}`;
+    await this.request<void>(path, { method: 'DELETE' });
+  }
+
   async getProgress(bookId: string): Promise<ProgressSnapshot> {
     const headers = new Headers({ authorization: `Bearer ${this.token}` });
     const response = await fetch(`${this.baseUrl}/v1/progress/${encodeURIComponent(bookId)}`, { headers });

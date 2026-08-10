@@ -1,6 +1,7 @@
 <script lang="ts">
   import StatisticsContent from '$lib/components/statistics/statistics-content.svelte';
   import { syncCloudStatisticsToLocal } from '$lib/cloud/cloud-statistics';
+  import CloudStatisticsEditor from '$lib/cloud/cloud-statistics-editor.svelte';
   import StatisticsHeader from '$lib/components/statistics/statistics-header.svelte';
   import StatisticsSettings from '$lib/components/statistics/statistics-settings.svelte';
   import {
@@ -36,6 +37,8 @@
   );
 
   let showStatisticsSettings = false;
+  let showCloudStatisticsEditor = false;
+  let statisticsRevision = 0;
   let cloudStatisticsReady = false;
   let cloudStatisticsError = '';
 
@@ -138,7 +141,11 @@
   }
 </script>
 
-<StatisticsHeader currentBookId={$currentBookId$} bind:showStatisticsSettings />
+<StatisticsHeader
+  currentBookId={$currentBookId$}
+  bind:showStatisticsSettings
+  bind:showCloudStatisticsEditor
+/>
 
 <div class="{pxScreen} flex flex-col pt-16 h-full xl:pt-14">
   {#if cloudStatisticsReady}
@@ -147,7 +154,9 @@
         Cloud statistics sync failed: {cloudStatisticsError}. Showing the local cache.
       </div>
     {/if}
-    <StatisticsContent />
+    {#key statisticsRevision}
+      <StatisticsContent />
+    {/key}
   {:else}
     <div class="py-8 text-sm opacity-60">Syncing cloud statistics…</div>
   {/if}
@@ -166,6 +175,20 @@
     <StatisticsSettings
       on:statisticsDateChange={handleSelectedStatisticsDateChange}
       on:close={() => (showStatisticsSettings = false)}
+    />
+  </div>
+{/if}
+
+
+{#if showCloudStatisticsEditor}
+  <div
+    class="writing-horizontal-tb fixed inset-y-0 right-0 z-[65] w-full max-w-3xl shadow-2xl"
+    in:fly|local={{ x: 100, duration: 100, easing: quintInOut }}
+    use:clickOutside={() => (showCloudStatisticsEditor = false)}
+  >
+    <CloudStatisticsEditor
+      on:close={() => (showCloudStatisticsEditor = false)}
+      on:changed={() => (statisticsRevision += 1)}
     />
   </div>
 {/if}

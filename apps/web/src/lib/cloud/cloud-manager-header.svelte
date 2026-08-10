@@ -3,6 +3,7 @@
   import {
     faArrowDownShortWide,
     faArrowDownWideShort,
+    faChartLine,
     faGear,
     faPlus,
     faRotate,
@@ -109,6 +110,15 @@
           {/each}
         </div>
       </Popover>
+
+      <button
+        class={iconButton}
+        title="Statistics"
+        aria-label="Statistics"
+        on:click={() => goto(`${pagePath}/statistics`)}
+      >
+        <Fa icon={faChartLine} />
+      </button>
 
       <button
         class={iconButton}
