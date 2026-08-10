@@ -17,6 +17,7 @@
 		booksDB$,
 		currentAudioLoaded$,
 		currentAudioSourceUrl$,
+		currentRemoteAudioFileName$,
 		currentSubtitles$,
 		currentTime$,
 		dialogs$,
@@ -381,8 +382,24 @@
 	}
 
 	async function onLoadedMetadata() {
+		// A newly-created <audio> element starts at currentTime=0. Because currentTime
+		// is two-way bound, that zero can briefly overwrite $currentTime$ when a
+		// cloud/remote src changes, before loadedmetadata runs. Cloud Reader stores
+		// the authoritative resume point in extensionData.playbackPosition, so use
+		// that for remote audio and write it back to both sides of the binding.
+		const cloudResumeTime =
+			$currentRemoteAudioFileName$ &&
+			Number.isFinite($extensionData$.playbackPosition)
+				? $extensionData$.playbackPosition
+				: undefined;
+		const resumeTime = Number.isFinite(cloudResumeTime) ? cloudResumeTime! : $currentTime$;
+
+		if (Number.isFinite(resumeTime) && resumeTime >= 0) {
+			$currentTime$ = resumeTime;
+		}
+
 		if (!isIOS) {
-			audioElement.currentTime = $currentTime$;
+			audioElement.currentTime = resumeTime;
 
 			return dispatch('loaded');
 		}
@@ -390,7 +407,7 @@
 		let attempts = 0;
 		let loadResolve: (_: any) => void;
 
-		const currentTime = $currentTime$;
+		const currentTime = resumeTime;
 		const loadedPromise = new Promise((resolve) => {
 			loadResolve = resolve;
 
