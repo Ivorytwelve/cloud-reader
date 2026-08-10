@@ -143,19 +143,31 @@ export async function autoOpenCloudAudiobookForLocalBook(localBookId: number): P
 
 export async function saveCloudAudiobookProgress(force = false): Promise<void> {
   if (!activeCloudBookId) return;
+
+  // IMPORTANT: snapshot the player state synchronously, before the first await.
+  //
+  // This function is called from the reader's teardown path. Even awaiting an
+  // already-resolved `session.loaded` yields to the microtask queue, which gives
+  // Svelte enough time to destroy/reset the <audio> element. The two-way
+  // currentTime binding then becomes 0 and the old implementation persisted
+  // that teardown value to the cloud, overwriting the valid playback position.
+  const seconds = get(currentTime$);
+  const duration = get(duration$) || undefined;
+  const playbackRate = get(playbackRate$);
+
+  if (!Number.isFinite(seconds)) return;
+
   const session = getCloudProgressSession(activeCloudBookId);
   if (!session) return;
-  await session.loaded;
 
-  const seconds = get(currentTime$);
-  if (!Number.isFinite(seconds)) return;
+  await session.loaded;
 
   void force;
   await session.sync.save({
     audiobook: {
       seconds,
-      duration: get(duration$) || undefined,
-      playbackRate: get(playbackRate$)
+      duration,
+      playbackRate
     }
   });
 }
