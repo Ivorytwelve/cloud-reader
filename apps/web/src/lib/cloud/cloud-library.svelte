@@ -60,6 +60,8 @@
   let uploadAuthor = '';
   let inspectingEpub = false;
   let uploading = false;
+  let uploadFailed = false;
+  let uploadController: AbortController | undefined;
   let uploadLabel = '';
   let uploadDone = 0;
   let uploadTotal = 0;
@@ -270,6 +272,8 @@
   async function uploadBook() {
     if (!api || !epubFile || !uploadTitle.trim() || uploading) return;
     uploading = true;
+    uploadFailed = false;
+    uploadController = new AbortController();
     error = '';
     status = 'Preparing upload…';
     uploadLabel = '';
@@ -357,6 +361,7 @@
         alignment: alignmentFile,
         alignmentInfo,
         audioMetadata,
+        signal: uploadController.signal,
         onUploadProgress: (label, done, total) => {
           uploadLabel = label;
           uploadDone = done;
@@ -371,10 +376,47 @@
       status = '';
       await refresh();
     } catch (caught) {
+      uploadFailed = true;
+      error = uploadController?.signal.aborted
+        ? 'Upload cancelled. You can retry with the same files.'
+        : errorMessage(caught);
+      status = '';
+      // Refresh immediately so a successfully aborted multipart reservation
+      // disappears from the footer instead of looking like a phantom upload.
+      await refresh().catch(() => undefined);
+    } finally {
+      uploading = false;
+      uploadController = undefined;
+    }
+  }
+
+  function cancelUpload() {
+    if (uploading && uploadController) {
+      status = 'Cancelling upload…';
+      uploadController.abort();
+      return;
+    }
+    resetUploadForm();
+    uploadFailed = false;
+    error = '';
+    showUpload = false;
+  }
+
+  async function clearStuckUploads() {
+    if (!api || uploading) return;
+    if (!confirm('Abort and clear all cloud upload reservations?\n\nOnly use this when no device is actively uploading. Already committed files are not deleted.')) return;
+    loading = true;
+    error = '';
+    status = 'Clearing stuck uploads…';
+    try {
+      quota = await api.clearStuckUploads();
+      status = '';
+      await refreshAfterMutation();
+    } catch (caught) {
       error = errorMessage(caught);
       status = '';
     } finally {
-      uploading = false;
+      loading = false;
     }
   }
 
@@ -554,6 +596,7 @@
     alignmentWarning = '';
     uploadTitle = '';
     uploadAuthor = '';
+    uploadFailed = false;
     uploadLabel = '';
     uploadDone = 0;
     uploadTotal = 0;
@@ -621,10 +664,9 @@
           <h2 class="font-semibold">Add to cloud library</h2>
           <button
             class="rounded-xl px-3 py-1.5 text-sm transition hover:bg-[#E3F2FD]"
-            on:click={() => { resetUploadForm(); showUpload = false; }}
-            disabled={uploading}
+            on:click={cancelUpload}
           >
-            Cancel
+            {uploading ? 'Stop upload' : 'Cancel'}
           </button>
         </div>
 
@@ -659,7 +701,7 @@
             on:click={() => void uploadBook()}
             disabled={!epubFile || !uploadTitle.trim() || uploading || inspectingEpub}
           >
-            {uploading ? 'Uploading…' : 'Upload to cloud'}
+            {uploading ? 'Uploading…' : uploadFailed ? 'Retry upload' : 'Upload to cloud'}
           </button>
           {#if coverFile}<span class="text-xs opacity-60">EPUB cover detected</span>{/if}
           {#if audioCoverFile}<span class="text-xs opacity-60">Audiobook cover detected</span>{/if}
@@ -669,6 +711,9 @@
           {#if alignmentWarning}<span class="text-xs text-amber-700">{alignmentWarning}</span>{/if}
           {#if uploadLabel && uploadTotal}
             <span class="text-xs opacity-70">{uploadLabel}: {((uploadDone / uploadTotal) * 100).toFixed(0)}%</span>
+          {/if}
+          {#if error}
+            <span class="basis-full text-xs text-red-600">{error}</span>
           {/if}
         </div>
       </div>
@@ -827,6 +872,15 @@
     <div class="min-w-0 truncate opacity-60">
       {#if api && quota}
         Cloud · {formatBytes(quota.usedBytes)} used{quota.reservedBytes ? ` + ${formatBytes(quota.reservedBytes)} uploading` : ''} · {formatBytes(quota.remainingBytes)} free · {formatBytes(quota.maxBytes)} cap
+        {#if quota.reservedBytes && !uploading}
+          <button
+            class="ml-2 rounded-md px-1.5 py-0.5 font-medium text-[#0D47A1] underline decoration-[#90CAF9] underline-offset-2 hover:bg-[#90CAF9]/20"
+            on:click={() => void clearStuckUploads()}
+            disabled={loading}
+          >
+            Clear stuck upload
+          </button>
+        {/if}
       {:else if api}
         Cloud connected · {libraryBooks.length} current · {historyBooks.length} read
       {:else}

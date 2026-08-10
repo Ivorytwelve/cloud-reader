@@ -16,6 +16,7 @@ export interface AddCloudBookInput {
     duration?: number;
     chapters?: AudioChapter[];
   };
+  signal?: AbortSignal;
   onUploadProgress?: (label: string, uploaded: number, total: number) => void;
 }
 
@@ -51,6 +52,7 @@ export async function addBookToCloud(api: TtsuCloudApi, input: AddCloudBookInput
   ) => {
     if (!file) return;
     await api.uploadAsset(id, kind, file, {
+      signal: input.signal,
       onProgress: (done, total) => input.onUploadProgress?.(kind, done, total)
     });
   };
@@ -85,6 +87,25 @@ export async function addBookToCloud(api: TtsuCloudApi, input: AddCloudBookInput
     }
 
     book = (await api.getLibrary()).books.find((candidate) => candidate.id === id) || book;
+
+    // A successful client request is not enough: the manifest is only updated by
+    // the Worker after R2 has committed the object. Verify every supplied asset is
+    // actually published before the new book can be opened from the library.
+    const requiredAssets: Array<['epub' | 'audio' | 'subtitles' | 'cover' | 'audioCover' | 'alignment', File | undefined]> = [
+      ['epub', input.epub],
+      ['audio', input.audio],
+      ['subtitles', input.subtitles],
+      ['cover', input.cover],
+      ['audioCover', input.audioCover],
+      ['alignment', input.alignment]
+    ];
+    const missing = requiredAssets
+      .filter(([kind, file]) => file && !book.assets[kind])
+      .map(([kind]) => kind);
+    if (missing.length) {
+      throw new Error(`Cloud upload did not finish committing: ${missing.join(', ')}`);
+    }
+
     return book;
   } catch (error) {
     // Initial uploads use fresh UUIDs, so deleting a failed new book is safe. For a

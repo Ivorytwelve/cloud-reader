@@ -9,6 +9,7 @@ export interface UploadOptions {
   partSize?: number;
   concurrency?: number;
   retries?: number;
+  signal?: AbortSignal;
   onProgress?: (uploadedBytes: number, totalBytes: number) => void;
 }
 
@@ -29,6 +30,45 @@ export class CloudApiError extends Error {
   }
 }
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const DIRECT_UPLOAD_TIMEOUT_MS = 5 * 60_000;
+const MULTIPART_PART_TIMEOUT_MS = 3 * 60_000;
+const MULTIPART_COMPLETE_TIMEOUT_MS = 60_000;
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  const externalSignal = init.signal;
+  let timedOut = false;
+  const onExternalAbort = () => controller.abort(externalSignal?.reason);
+
+  if (externalSignal?.aborted) {
+    controller.abort(externalSignal.reason);
+  } else {
+    externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+  }
+
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (timedOut && !externalSignal?.aborted) {
+      throw new Error(`Cloud request timed out after ${Math.round(timeoutMs / 1000)} seconds`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
+  }
+}
+
 export class TtsuCloudApi {
   readonly baseUrl: string;
   private readonly token: string;
@@ -38,10 +78,14 @@ export class TtsuCloudApi {
     this.token = options.token;
   }
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<{ data: T; response: Response }> {
+  private async request<T>(
+    path: string,
+    init: RequestInit = {},
+    timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  ): Promise<{ data: T; response: Response }> {
     const headers = new Headers(init.headers);
     headers.set('authorization', `Bearer ${this.token}`);
-    const response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
+    const response = await fetchWithTimeout(`${this.baseUrl}${path}`, { ...init, headers }, timeoutMs);
 
     if (!response.ok) {
       let body: unknown;
@@ -90,6 +134,16 @@ export class TtsuCloudApi {
     return (await this.request<CloudQuotaStatus>('/v1/quota')).data;
   }
 
+  async clearStuckUploads(): Promise<CloudQuotaStatus> {
+    return (
+      await this.request<CloudQuotaStatus>('/v1/uploads/cleanup', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ force: true }),
+      })
+    ).data;
+  }
+
   async upsertBook(book: Pick<CloudBook, 'id' | 'title'> & Partial<CloudBook>): Promise<CloudBook> {
     return (
       await this.request<CloudBook>(`/v1/books/${encodeURIComponent(book.id)}`, {
@@ -135,7 +189,11 @@ export class TtsuCloudApi {
       const directPath =
         `/v1/books/${encodeURIComponent(bookId)}/assets/${kind}/direct` +
         `?size=${file.size}&fileName=${encodeURIComponent(file.name)}`;
-      const response = await fetch(`${this.baseUrl}${directPath}`, { method: 'PUT', headers, body: file });
+      const response = await fetchWithTimeout(
+        `${this.baseUrl}${directPath}`,
+        { method: 'PUT', headers, body: file, signal: options.signal },
+        DIRECT_UPLOAD_TIMEOUT_MS,
+      );
       if (!response.ok) {
         const body = await response.json().catch(() => undefined);
         throw new CloudApiError(`Asset upload failed (${response.status})`, response.status, body);
@@ -148,7 +206,11 @@ export class TtsuCloudApi {
       `/v1/books/${encodeURIComponent(bookId)}/assets/${kind}/multipart/create` +
       `?fileName=${encodeURIComponent(file.name)}&contentType=${encodeURIComponent(file.type || 'application/octet-stream')}` +
       `&size=${file.size}`;
-    const { data: created } = await this.request<{ uploadId: string }>(createPath, { method: 'POST' });
+    const { data: created } = await this.request<{ uploadId: string }>(
+      createPath,
+      { method: 'POST', signal: options.signal },
+      DEFAULT_REQUEST_TIMEOUT_MS,
+    );
     const uploadId = created.uploadId;
     const totalParts = Math.ceil(file.size / partSize);
     const parts: UploadedPart[] = new Array(totalParts);
@@ -166,13 +228,15 @@ export class TtsuCloudApi {
           const { data } = await this.request<UploadedPart>(
             `/v1/books/${encodeURIComponent(bookId)}/assets/${kind}/multipart/part` +
               `?uploadId=${encodeURIComponent(uploadId)}&partNumber=${index + 1}`,
-            { method: 'PUT', body: chunk },
+            { method: 'PUT', body: chunk, signal: options.signal },
+            MULTIPART_PART_TIMEOUT_MS,
           );
           uploadedBytes += chunk.size;
           options.onProgress?.(Math.min(uploadedBytes, file.size), file.size);
           return data;
         } catch (error) {
           lastError = error;
+          if (options.signal?.aborted) throw error;
           if (attempt < retries) await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
         }
       }
@@ -200,7 +264,9 @@ export class TtsuCloudApi {
             contentType: file.type || 'application/octet-stream',
             size: file.size,
           }),
+          signal: options.signal,
         },
+        MULTIPART_COMPLETE_TIMEOUT_MS,
       );
     } catch (error) {
       await this.request<void>(

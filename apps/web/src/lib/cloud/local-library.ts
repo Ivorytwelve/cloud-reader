@@ -68,6 +68,15 @@ export async function ensureCloudBookLocal(
   }
 
   options.onStatus?.('Adding book to this device…');
+
+  // Cloud titles are user-facing metadata and do not have to be byte-for-byte
+  // identical to the EPUB's internal dc:title. Snapshot the local DB so we can
+  // identify the record that Ttsu actually imported instead of assuming the
+  // cloud title is the IndexedDB title.
+  const db = await database.db;
+  const beforeImport = await db.getAll('data');
+  const beforeById = new Map(beforeImport.map((entry) => [entry.id, entry]));
+
   const error = await importData(
     document,
     browserHandler(),
@@ -76,14 +85,54 @@ export async function ensureCloudBookLocal(
   );
   if (error) throw new Error(error);
 
-  const imported = await database.getDataByTitle(book.title);
+  const afterImport = await db.getAll('data');
+  const changed = afterImport.filter((entry) => {
+    if (!entry.elementHtml) return false;
+    const before = beforeById.get(entry.id);
+    return !before ||
+      before.lastBookModified !== entry.lastBookModified ||
+      before.elementHtml !== entry.elementHtml;
+  });
+
+  let imported = changed.length === 1 ? changed[0] : undefined;
+
+  // Prefer a changed exact/normalized title when another tab happened to alter
+  // the DB at the same time. The normalization also handles titles such as
+  // 悪役（ヒール） vs 悪役 without making the cloud display title authoritative.
+  if (!imported) {
+    const targetTitle = normalizeBookTitle(book.title);
+    imported = changed.find((entry) => normalizeBookTitle(entry.title) === targetTitle);
+  }
+  if (!imported) {
+    const exact = await database.getDataByTitle(book.title);
+    if (exact?.elementHtml) imported = exact;
+  }
+  if (!imported) {
+    const targetTitle = normalizeBookTitle(book.title);
+    imported = afterImport.find(
+      (entry) => entry.elementHtml && normalizeBookTitle(entry.title) === targetTitle
+    );
+  }
+
   if (!imported?.elementHtml) {
-    throw new Error(`The EPUB imported successfully but Ttsu could not find “${book.title}”`);
+    throw new Error(
+      `The EPUB was added to Ttsu, but Cloud Reader could not identify the imported local record for “${book.title}”.`
+    );
   }
 
   linkCloudBook(book.id, imported.id, imported.title);
   await applyCloudAlignmentIfNeeded(api, book, imported.id, options);
   return imported.id;
+}
+
+function normalizeBookTitle(value: string): string {
+  return value
+    .normalize('NFKC')
+    // Common EPUB metadata uses a parenthesized reading/alias that users often
+    // omit from the cloud display title, e.g. 悪役（ヒール）.
+    .replace(/[（(][^（）()]{1,24}[）)]/g, '')
+    .replace(/[\s\u3000・･:：!！?？「」『』【】［］\[\]〈〉《》<>—―ー~～_.,，。'"“”‘’]/g, '')
+    .toLocaleLowerCase('ja-JP');
 }
 
 export async function applyRemoteReaderProgress(
