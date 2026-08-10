@@ -6,6 +6,7 @@ import { get } from 'svelte/store';
 import { setAudioContext, setSubtitleContext, updateSubtitles } from '$lib/whispersync-upstream/lib/files';
 import {
   bookData$,
+  booksDB$,
   currentAudioSourceUrl$,
   currentCoverUrl$,
   currentRemoteAudioFileName$,
@@ -74,10 +75,23 @@ export async function openCloudAudiobook(api: TtsuCloudApi, book: CloudBook): Pr
   // Set the resume position before the audio element receives the new src.
   // Player.svelte seeks to currentTime when loadedmetadata fires.
   if (Number.isFinite(resumeAt)) {
-    currentTime$.set(resumeAt!);
     const extensionData = get(extensionData$);
-    extensionData.playbackPosition = resumeAt!;
-    extensionData$.set(extensionData);
+    const playbackPosition = resumeAt!;
+
+    // Keep Whispersync's local audioBook cache in sync with the cloud resume
+    // point as well. This makes cloud the source of truth while allowing the
+    // upstream component to initialise naturally from the same value.
+    const db = get(booksDB$);
+    if (db && extensionData.title) {
+      await db.put('audioBook', {
+        title: extensionData.title,
+        playbackPosition,
+        lastAudioBookModified: Date.now()
+      });
+    }
+
+    currentTime$.set(playbackPosition);
+    extensionData$.set({ ...extensionData, playbackPosition });
   }
 
   if (remoteProgress?.audiobook?.playbackRate) playbackRate$.set(remoteProgress.audiobook.playbackRate);
@@ -89,12 +103,16 @@ export async function openCloudAudiobook(api: TtsuCloudApi, book: CloudBook): Pr
 
   // Do not make a Blob from the audiobook. The browser keeps native range-seek
   // behavior when the Whispersync <audio> element points straight at the Worker.
+  // Set the remote marker BEFORE changing the audio src. Player.svelte uses
+  // this marker during loadedmetadata to distinguish a cloud resume from a
+  // normal local-file load. Setting it afterward created a startup race where
+  // a fast audio element could restore from its default 0-second position.
+  currentRemoteAudioFileName$.set(book.assets.audio.fileName);
   await setAudioContext(get(currentCoverUrl$), get(currentAudioSourceUrl$), undefined, {
     coverUrl: audioCoverUrl,
     audioSourceUrl: audioUrl,
     chapters: book.audio?.chapters || []
   });
-  currentRemoteAudioFileName$.set(book.assets.audio.fileName);
 }
 
 /**

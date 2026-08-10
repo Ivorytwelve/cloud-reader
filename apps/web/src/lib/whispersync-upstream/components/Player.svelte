@@ -65,6 +65,10 @@
 
 	export let imageLoaded: () => void;
 
+	// Cloud audio must not persist the element's default 0-second position before
+	// loadedmetadata has had a chance to restore the authoritative cloud time.
+	let audioMetadataReady = false;
+
 	// The recorder stack depends on Web Workers. Keep it out of SvelteKit SSR/prerender
 	// and load it only when the user actually records audio for an export.
 	async function startAudioRecording(audioElement: HTMLAudioElement) {
@@ -382,25 +386,22 @@
 	}
 
 	async function onLoadedMetadata() {
-		// A newly-created <audio> element starts at currentTime=0. Because currentTime
-		// is two-way bound, that zero can briefly overwrite $currentTime$ when a
-		// cloud/remote src changes, before loadedmetadata runs. Cloud Reader stores
-		// the authoritative resume point in extensionData.playbackPosition, so use
-		// that for remote audio and write it back to both sides of the binding.
+		// bind:currentTime can be set to 0 by a freshly-created audio element before
+		// metadata arrives. For cloud audio the separately hydrated extension-data
+		// value is the authoritative pending resume point.
 		const cloudResumeTime =
-			$currentRemoteAudioFileName$ &&
-			Number.isFinite($extensionData$.playbackPosition)
+			$currentRemoteAudioFileName$ && Number.isFinite($extensionData$.playbackPosition)
 				? $extensionData$.playbackPosition
 				: undefined;
 		const resumeTime = Number.isFinite(cloudResumeTime) ? cloudResumeTime! : $currentTime$;
 
 		if (Number.isFinite(resumeTime) && resumeTime >= 0) {
 			$currentTime$ = resumeTime;
+			audioElement.currentTime = resumeTime;
 		}
+		audioMetadataReady = true;
 
 		if (!isIOS) {
-			audioElement.currentTime = resumeTime;
-
 			return dispatch('loaded');
 		}
 
@@ -464,6 +465,10 @@
 	}
 
 	async function onCurrentTimeChange() {
+		// Ignore startup timeupdate/pause events for cloud audio until the initial
+		// loadedmetadata seek has completed. Otherwise 0 can overwrite both the
+		// in-memory resume point and the cloud progress we just loaded.
+		if ($currentRemoteAudioFileName$ && !audioMetadataReady) return;
 		if ($exportCancelController$?.signal.aborted) {
 			await stopAudioRecording($exportAudioBitrate$, true).catch(() => {
 				// no-op
@@ -934,7 +939,10 @@
 		bind:paused={$paused$}
 		bind:playbackRate={$playbackRate$}
 		bind:this={audioElement}
-		on:loadstart
+		on:loadstart={() => {
+			audioMetadataReady = false;
+			dispatch('loadstart');
+		}}
 		on:loadedmetadata={onLoadedMetadata}
 		on:timeupdate={onCurrentTimeChange}
 		on:pause={onCurrentTimeChange}
