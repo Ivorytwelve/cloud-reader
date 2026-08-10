@@ -103,6 +103,10 @@
   }
 
 
+  function inputValue(event: Event) {
+    return (event.currentTarget as HTMLInputElement).value;
+  }
+
   function updateDraft(entry: CloudStatisticAggregate, field: 'time' | 'characters', value: string) {
     const current = drafts.get(key(entry));
     if (!current) return;
@@ -179,11 +183,11 @@
               </div>
               <label class="text-xs">
                 <span class="mb-1 block opacity-60">Time</span>
-                <input class="w-full rounded-lg border border-[#90CAF9] bg-white px-2 py-1.5" value={draft.time} on:input={(event) => updateDraft(entry, 'time', (event.currentTarget as HTMLInputElement).value)} disabled={savingKey === key(entry)} />
+                <input class="w-full rounded-lg border border-[#90CAF9] bg-white px-2 py-1.5" value={draft.time} on:input={(event) => updateDraft(entry, 'time', inputValue(event))} disabled={savingKey === key(entry)} />
               </label>
               <label class="text-xs">
                 <span class="mb-1 block opacity-60">Characters</span>
-                <input type="number" min="0" step="1" class="w-full rounded-lg border border-[#90CAF9] bg-white px-2 py-1.5" value={draft.characters} on:input={(event) => updateDraft(entry, 'characters', (event.currentTarget as HTMLInputElement).value)} disabled={savingKey === key(entry)} />
+                <input type="number" min="0" step="1" class="w-full rounded-lg border border-[#90CAF9] bg-white px-2 py-1.5" value={draft.characters} on:input={(event) => updateDraft(entry, 'characters', inputValue(event))} disabled={savingKey === key(entry)} />
               </label>
               <div class="flex items-center justify-end gap-1">
                 <button
