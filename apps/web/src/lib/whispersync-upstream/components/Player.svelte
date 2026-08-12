@@ -41,6 +41,7 @@
 		AbortError,
 		between,
 		caluclatePercentage,
+		decorateLineHighlightForId,
 		getLineCSSSelector,
 		getLineCSSSelectorForId,
 		getSubtitleIdFromElement,
@@ -884,6 +885,10 @@
 			) {
 				activeCues = [subtitle2.id];
 			}
+		}
+
+		for (const activeCue of activeCues) {
+			decorateLineHighlightForId(activeCue);
 		}
 
 		const elements = document.querySelectorAll(

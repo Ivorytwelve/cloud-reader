@@ -246,7 +246,7 @@ export enum AnkiDuplicateMode {
 
 export function getDefaultSettings(): Settings {
 	return {
-		'ttu-whispersync-reader-line-highlight-color': '#fffa82',
+		'ttu-whispersync-reader-line-highlight-color': '#80f0ff',
 		'ttu-whispersync-reader-line-text-highlight-color': '#000000',
 		'ttu-whispersync-reader-enable-line-highlight': true,
 		'ttu-whispersync-reader-enable-line-text-highlight': true,

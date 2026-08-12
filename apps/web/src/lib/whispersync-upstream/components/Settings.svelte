@@ -137,6 +137,16 @@
 		actionListOfSubtitles$,
 		actionListOfFooter$,
 	} = settings$;
+
+	// Apply the new Cloud Reader highlight colour once to existing installs as
+	// well as fresh ones. After this one-time migration the colour picker keeps
+	// working normally and any later custom colour remains persistent.
+	const readerHighlightStyleMigrationKey = 'ttu-cloud-reader-highlight-style-v1';
+	if (window.localStorage.getItem(readerHighlightStyleMigrationKey) !== '1') {
+		readerLineHighlightColor$.set('#80f0ff');
+		window.localStorage.setItem(readerHighlightStyleMigrationKey, '1');
+	}
+
 	const ankiModelFields = new Map<string, string[]>();
 	const ankiSettingsModes: AnkiSettingssMode[] = [AnkiSettingssMode.CREATE, AnkiSettingssMode.UPDATE];
 	const imageFormats = [ImageFormat.AUTO, ImageFormat.JPEG, ImageFormat.PNG, ImageFormat.WEBP];
@@ -189,29 +199,54 @@
 
 		const nodeId = 'ttu-whispersync-color-styles';
 		const cssContents: string[] = [];
+		const activeSelector = `span[class^='ttu-whispersync-line-highlight-'].active`;
+		const menuOpenSelector = `span[class^='ttu-whispersync-line-highlight-'].menu-open`;
+		const highlightedSelector = `${activeSelector},${menuOpenSelector}`;
+		const highlightColor = $readerLineHighlightColor$;
 
 		if ($readerEnableLineHighlight$ && $readerEnableLineTextHighlight$) {
 			cssContents.push(
-				`span[class^='ttu-whispersync-line-highlight-'].active,`,
-				`span[class^='ttu-whispersync-line-highlight-'].menu-open `,
-				`{color: ${$readerLineTextHighlightColor$};background-color: ${$readerLineHighlightColor$};}`,
+				`${highlightedSelector}{color:${$readerLineTextHighlightColor$};background-color:${highlightColor};}`,
 			);
 		} else if ($readerEnableLineHighlight$) {
-			cssContents.push(
-				`span[class^='ttu-whispersync-line-highlight-'].active,`,
-				`span[class^='ttu-whispersync-line-highlight-'].menu-open `,
-				`{background-color: ${$readerLineHighlightColor$};}`,
-			);
+			cssContents.push(`${highlightedSelector}{background-color:${highlightColor};}`);
 		} else if ($readerEnableLineTextHighlight$) {
-			cssContents.push(
-				`span[class^='ttu-whispersync-line-highlight-'].active,`,
-				`span[class^='ttu-whispersync-line-highlight-'].menu-open `,
-				`{color: ${$readerLineTextHighlightColor$};}`,
-			);
+			cssContents.push(`${highlightedSelector}{color:${$readerLineTextHighlightColor$};}`);
 		} else {
 			cssContents.push(
-				`span[class^='ttu-whispersync-line-highlight-'].menu-open `,
-				`{color: ${$readerLineTextHighlightColor$};background-color: ${$readerLineHighlightColor$};}`,
+				`${menuOpenSelector}{color:${$readerLineTextHighlightColor$};background-color:${highlightColor};}`,
+			);
+		}
+
+		if ($readerEnableLineHighlight$) {
+			const geometrySelectors = [activeSelector, menuOpenSelector];
+			const withHighlightClass = (className: string) =>
+				geometrySelectors.map((selector) => `${selector}.${className}`).join(',');
+			const inBookContent = (bookSelector: string, className?: string) =>
+				geometrySelectors
+					.map((selector) => `${bookSelector} ${selector}${className ? `.${className}` : ''}`)
+					.join(',');
+
+			cssContents.push(
+				`${highlightedSelector}{` +
+					`-webkit-box-decoration-break:clone;box-decoration-break:clone;border-radius:5px;}`,
+				`${inBookContent('.book-content--writing-vertical-rl')}{` +
+					`box-shadow:2px 0 0 ${highlightColor},-2px 0 0 ${highlightColor},` +
+					`0 1px 0 ${highlightColor},0 -1px 0 ${highlightColor};}`,
+				`${inBookContent('.book-content:not(.book-content--writing-vertical-rl)')}{` +
+					`box-shadow:0 2px 0 ${highlightColor},0 -2px 0 ${highlightColor},` +
+					`1px 0 0 ${highlightColor},-1px 0 0 ${highlightColor};}`,
+				`${withHighlightClass('ttu-whispersync-highlight-segment')}{border-radius:0;}`,
+				`${withHighlightClass('ttu-whispersync-highlight-annotation')}{` +
+					`background-color:transparent;box-shadow:none;border-radius:0;}`,
+				`${inBookContent('.book-content--writing-vertical-rl', 'ttu-whispersync-highlight-start')}{` +
+					`border-top-left-radius:5px;border-top-right-radius:5px;}`,
+				`${inBookContent('.book-content--writing-vertical-rl', 'ttu-whispersync-highlight-end')}{` +
+					`border-bottom-left-radius:5px;border-bottom-right-radius:5px;}`,
+				`${inBookContent('.book-content:not(.book-content--writing-vertical-rl)', 'ttu-whispersync-highlight-start')}{` +
+					`border-top-left-radius:5px;border-bottom-left-radius:5px;}`,
+				`${inBookContent('.book-content:not(.book-content--writing-vertical-rl)', 'ttu-whispersync-highlight-end')}{` +
+					`border-top-right-radius:5px;border-bottom-right-radius:5px;}`,
 			);
 		}
 

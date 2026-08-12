@@ -52,6 +52,11 @@ export class AbortError extends Error {
 
 export const baseLineCSSClass = `ttu-whispersync-line-highlight-`;
 
+export const lineHighlightSegmentClass = 'ttu-whispersync-highlight-segment';
+export const lineHighlightStartClass = 'ttu-whispersync-highlight-start';
+export const lineHighlightEndClass = 'ttu-whispersync-highlight-end';
+export const lineHighlightAnnotationClass = 'ttu-whispersync-highlight-annotation';
+
 export const allIgnoredElements = new Set(['rp', 'rt']);
 
 export function parseHTML(domParser: DOMParser, hmtl: string) {
@@ -131,6 +136,48 @@ export function getLineCSSSelectorForId(id: string) {
 
 export function getBaseLineCSSSelectorForId(id: string) {
 	return `${baseLineCSSClass}${id}`;
+}
+
+/**
+ * Marks the DOM fragments belonging to one subtitle so CSS can paint them as
+ * one continuous highlight instead of a stack of independently rounded boxes.
+ *
+ * EPUB ruby annotations are separate text nodes. They intentionally keep the
+ * text-highlight colour, but their own background is suppressed so the main
+ * reading column stays a constant width through ruby and punctuation markup.
+ */
+export function decorateLineHighlightForId(id: string, root: ParentNode = document) {
+	const elements = [...root.querySelectorAll<HTMLElement>(getLineCSSSelectorForId(id))];
+
+	if (!elements.length) {
+		return;
+	}
+
+	for (const element of elements) {
+		element.classList.remove(
+			lineHighlightSegmentClass,
+			lineHighlightStartClass,
+			lineHighlightEndClass,
+			lineHighlightAnnotationClass,
+		);
+	}
+
+	const primaryElements = elements.filter((element) => {
+		if (element.closest('rt, rp')) {
+			element.classList.add(lineHighlightAnnotationClass);
+			return false;
+		}
+
+		element.classList.add(lineHighlightSegmentClass);
+		return true;
+	});
+
+	if (!primaryElements.length) {
+		return;
+	}
+
+	primaryElements[0].classList.add(lineHighlightStartClass);
+	primaryElements[primaryElements.length - 1].classList.add(lineHighlightEndClass);
 }
 
 export function onNumberFieldChangeWithDefault(event: EventWithElement<HTMLInputElement>, defaultValue: number) {

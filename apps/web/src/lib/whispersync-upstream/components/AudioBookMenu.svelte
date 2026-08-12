@@ -61,6 +61,7 @@
 		togglePlayPauseTitle$,
 	} from '../lib/stores';
 	import {
+		decorateLineHighlightForId,
 		getLineCSSSelectorForId,
 		getLineCSSSelector,
 		getSubtitleIdFromElement,
@@ -826,6 +827,8 @@
 		if (oldSubtitleId === subtitleId) {
 			return;
 		}
+
+		decorateLineHighlightForId(subtitleId!, bookContentElement);
 
 		const subtitleElements = [...bookContentElement.querySelectorAll(getLineCSSSelectorForId(subtitleId!))];
 		const startElment = subtitleElements[0];
