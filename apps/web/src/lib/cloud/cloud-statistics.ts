@@ -4,6 +4,7 @@ import { MergeMode } from '$lib/data/merge-mode';
 import { ReplicationSaveBehavior } from '$lib/functions/replication/replication-options';
 import { CloudApiError } from './api';
 import { getConfiguredCloudApi } from './progress-session';
+import { getCloudWriteRetryDelayMs } from './cloud-write-throttle';
 import { getOrCreateDeviceId } from './progress-sync';
 import type { CloudStatisticAggregate, CloudStatisticSnapshot } from './types';
 import {
@@ -106,7 +107,10 @@ export async function flushPendingCloudStatistics(): Promise<void> {
         // Keep the exact cumulative snapshot dirty. In particular, stop after a
         // 429 instead of hammering the Worker with every historical row.
         if (isRetryableStatisticUploadError(error)) {
-          followupDelay = CLOUD_STAT_RETRY_DELAY_MS;
+          // A shared 429 breaker may be much longer than the normal transient
+          // retry (for example the daily write cap). Respect it so statistics
+          // do not wake up every minute just to be rejected locally.
+          followupDelay = Math.max(CLOUD_STAT_RETRY_DELAY_MS, getCloudWriteRetryDelayMs());
         }
         throw error;
       }
@@ -119,7 +123,7 @@ export async function flushPendingCloudStatistics(): Promise<void> {
   })().finally(() => {
     flushInFlight = undefined;
     if (followupDelay !== undefined && hasDirtyCloudStatistics()) {
-      if (followupDelay === CLOUD_STAT_RETRY_DELAY_MS) scheduleCloudStatisticRetry(followupDelay);
+      if (followupDelay >= CLOUD_STAT_RETRY_DELAY_MS) scheduleCloudStatisticRetry(followupDelay);
       else scheduleCloudStatisticFlush(followupDelay);
     }
   });

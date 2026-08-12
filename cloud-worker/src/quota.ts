@@ -226,20 +226,63 @@ export class QuotaGuard {
     const safeCost = Math.max(1, Math.min(100, Math.floor(cost || 1)));
 
     if (kind === 'write') {
-      if (this.data.minuteWrites + safeCost > this.maxWriteOpsPerMinute) {
-        return json({ error: 'Upload/write rate limit reached. Try again in a minute.' }, 429);
-      }
+      // Prefer the longer-lived daily reason when both limits are exceeded.
+      // Otherwise a client that has already exhausted the day would probe again
+      // after one minute only to discover the daily cap on the next request.
       if (this.data.dayWrites + safeCost > this.maxWriteOpsPerDay) {
-        return json({ error: 'Daily cloud write budget reached. Try again after 00:00 UTC.' }, 429);
+        const date = new Date(now);
+        const retryAt =
+          Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1) + 2_000;
+        return json(
+          {
+            error: 'Daily cloud write budget reached. Try again after 00:00 UTC.',
+            code: 'WRITE_BUDGET_DAILY',
+            retryAt,
+            retryAfterMs: retryAt - now,
+          },
+          429,
+        );
+      }
+      if (this.data.minuteWrites + safeCost > this.maxWriteOpsPerMinute) {
+        const retryAt = Math.max(now + 1_000, this.data.minuteWindowStart + 60_000);
+        return json(
+          {
+            error: 'Upload/write rate limit reached. Try again in a minute.',
+            code: 'WRITE_RATE_LIMIT_MINUTE',
+            retryAt,
+            retryAfterMs: retryAt - now,
+          },
+          429,
+        );
       }
       this.data.minuteWrites += safeCost;
       this.data.dayWrites += safeCost;
     } else {
-      if (this.data.minuteReads + safeCost > this.maxReadOpsPerMinute) {
-        return json({ error: 'Cloud read rate limit reached. Try again in a minute.' }, 429);
-      }
       if (this.data.dayReads + safeCost > this.maxReadOpsPerDay) {
-        return json({ error: 'Daily cloud read budget reached. Try again after 00:00 UTC.' }, 429);
+        const date = new Date(now);
+        const retryAt =
+          Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1) + 2_000;
+        return json(
+          {
+            error: 'Daily cloud read budget reached. Try again after 00:00 UTC.',
+            code: 'READ_BUDGET_DAILY',
+            retryAt,
+            retryAfterMs: retryAt - now,
+          },
+          429,
+        );
+      }
+      if (this.data.minuteReads + safeCost > this.maxReadOpsPerMinute) {
+        const retryAt = Math.max(now + 1_000, this.data.minuteWindowStart + 60_000);
+        return json(
+          {
+            error: 'Cloud read rate limit reached. Try again in a minute.',
+            code: 'READ_RATE_LIMIT_MINUTE',
+            retryAt,
+            retryAfterMs: retryAt - now,
+          },
+          429,
+        );
       }
       this.data.minuteReads += safeCost;
       this.data.dayReads += safeCost;

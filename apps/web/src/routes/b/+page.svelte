@@ -180,6 +180,7 @@
     saveLinkedCloudReaderProgress
   } from '$lib/cloud/reader-progress';
   import { getCloudLinkByLocalBookId } from '$lib/cloud/book-links';
+  import { getCloudWriteRetryDelayMs } from '$lib/cloud/cloud-write-throttle';
   import {
     clearRange,
     getParagraphToPoint,
@@ -1201,7 +1202,12 @@
       await saveLinkedCloudReaderProgress(bookId, data);
       lastCloudReaderProgressSignature = signature;
     } catch (error) {
-      logger.warn(`Cloud progress save failed: ${error instanceof Error ? error.message : String(error)}`);
+      // Once a Worker 429 has opened the shared write circuit, subsequent autosave
+      // attempts are rejected locally. Keep the update queued without filling the
+      // console with an error every time the reader emits PAGE_CHANGE.
+      if (getCloudWriteRetryDelayMs() <= 0) {
+        logger.warn(`Cloud progress save failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   }
 

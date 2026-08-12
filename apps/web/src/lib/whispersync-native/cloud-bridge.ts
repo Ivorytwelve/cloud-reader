@@ -23,6 +23,7 @@ import { applyCloudAlignmentIfNeeded, suppressCloudAlignment } from '$lib/cloud/
 import { getCloudProgressSession, getConfiguredCloudApi } from '$lib/cloud/progress-session';
 import { activeCloudBookId$, cloudAudiobookTrackingActive$ } from '$lib/cloud/audiobook-tracking';
 import { AudiobookWriteBuffer, type BufferedAudiobookProgress } from '$lib/cloud/audiobook-write-buffer';
+import { getCloudWriteRetryDelayMs } from '$lib/cloud/cloud-write-throttle';
 import type { CloudAlignmentInfo, CloudBook, CloudProgress } from '$lib/cloud/types';
 
 const CLOUD_AUDIO_SAVE_INTERVAL_MS = 5_000;
@@ -249,6 +250,14 @@ async function drainCloudAudiobookProgress(force: boolean, allowDisarmed = false
   if (!pending || !bookId || !cloudAudioUserDirty) return;
   if (!allowDisarmed && (!cloudAudioWritesArmed || cloudAudioRevalidation)) return;
 
+  const cloudWriteBlockedFor = getCloudWriteRetryDelayMs();
+  if (cloudWriteBlockedFor > 0) {
+    // Keep only the latest buffered position and wake up when the shared Worker
+    // write breaker allows one probe. No network request is made here.
+    scheduleCloudAudioSave(cloudWriteBlockedFor + 250);
+    return;
+  }
+
   const elapsed = Date.now() - lastCloudSaveAt;
   if (!force && lastCloudSaveAt && elapsed < CLOUD_AUDIO_SAVE_INTERVAL_MS) {
     scheduleCloudAudioSave(CLOUD_AUDIO_SAVE_INTERVAL_MS - elapsed);
@@ -308,9 +317,12 @@ async function drainCloudAudiobookProgress(force: boolean, allowDisarmed = false
     // Retry transient failures with backoff instead of losing a final pause/seek.
     if (activeCloudBookId === bookId && cloudAudioWriteBuffer.pending && cloudAudioUserDirty) {
       if (isRetryableProgressSaveError(error)) {
-        const delay = cloudAudioRetryDelay;
+        const sharedThrottleDelay = getCloudWriteRetryDelayMs();
+        const delay = Math.max(cloudAudioRetryDelay, sharedThrottleDelay);
         cloudAudioRetryDelay = Math.min(cloudAudioRetryDelay * 2, CLOUD_AUDIO_RETRY_MAX_MS);
-        if (cloudAudioWritesArmed && !cloudAudioRevalidation) scheduleCloudAudioSave(delay);
+        if (cloudAudioWritesArmed && !cloudAudioRevalidation) {
+          scheduleCloudAudioSave(delay + (sharedThrottleDelay > 0 ? 250 : 0));
+        }
       } else {
         cloudAudioWriteBuffer.discardPending();
         cloudAudioUserDirty = false;
@@ -489,6 +501,12 @@ export function installCloudAudiobookProgressEvents(): () => void {
       playbackRate: detail.playbackRate
     });
     if (!queued) return;
+
+    const cloudWriteBlockedFor = getCloudWriteRetryDelayMs();
+    if (cloudWriteBlockedFor > 0) {
+      scheduleCloudAudioSave(cloudWriteBlockedFor + 250);
+      return;
+    }
 
     const now = Date.now();
     const elapsed = now - lastCloudSaveAt;

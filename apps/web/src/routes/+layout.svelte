@@ -2,6 +2,7 @@
   import { browser } from '$app/environment';
   import { page } from '$app/stores';
   import DomainHint from '$lib/components/domain-hint.svelte';
+  import CloudSyncToast from '$lib/cloud/cloud-sync-toast.svelte';
   import { basePath, clearConsoleOnReload } from '$lib/data/env';
   import { dialogManager, type Dialog } from '$lib/data/dialog-manager';
   import { userFontsCacheName, type UserFont } from '$lib/data/fonts';
@@ -135,3 +136,4 @@
 <span style={`font-family: ${$fontFamilyGroupOne$ || 'Noto Serif JP'}`} />
 
 <DomainHint />
+<CloudSyncToast />

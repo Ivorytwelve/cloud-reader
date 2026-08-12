@@ -1,4 +1,5 @@
 import type { AssetKind, CloudBook, CloudLibrarySnapshot, CloudProgress, CloudQuotaStatus, CloudStatisticAggregate, CloudStatisticSnapshot, LibraryManifest, ProgressSnapshot } from './types';
+import { getCloudWriteThrottleState, noteCloudWriteRateLimit, noteCloudWriteSuccess } from './cloud-write-throttle';
 
 export interface CloudApiOptions {
   baseUrl: string;
@@ -34,6 +35,32 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DIRECT_UPLOAD_TIMEOUT_MS = 5 * 60_000;
 const MULTIPART_PART_TIMEOUT_MS = 3 * 60_000;
 const MULTIPART_COMPLETE_TIMEOUT_MS = 60_000;
+
+function isWriteMethod(method: string | undefined): boolean {
+  const normalized = (method || 'GET').toUpperCase();
+  return normalized === 'POST' || normalized === 'PUT' || normalized === 'PATCH' || normalized === 'DELETE';
+}
+
+function assertCloudWriteAllowed(): void {
+  const throttle = getCloudWriteThrottleState();
+  if (!throttle) return;
+  throw new CloudApiError('Cloud writes are temporarily paused', 429, {
+    code: 'CLIENT_WRITE_THROTTLED',
+    retryAt: throttle.blockedUntil,
+  });
+}
+
+async function readErrorBody(response: Response): Promise<unknown> {
+  try {
+    return await response.clone().json();
+  } catch {
+    return response.clone().text().catch(() => undefined);
+  }
+}
+
+function observeWriteFailure(status: number, body: unknown): void {
+  if (status === 429) noteCloudWriteRateLimit(body);
+}
 
 async function fetchWithTimeout(
   url: string,
@@ -83,20 +110,20 @@ export class TtsuCloudApi {
     init: RequestInit = {},
     timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
   ): Promise<{ data: T; response: Response }> {
+    const writeRequest = isWriteMethod(init.method);
+    if (writeRequest) assertCloudWriteAllowed();
+
     const headers = new Headers(init.headers);
     headers.set('authorization', `Bearer ${this.token}`);
     const response = await fetchWithTimeout(`${this.baseUrl}${path}`, { ...init, headers }, timeoutMs);
 
     if (!response.ok) {
-      let body: unknown;
-      try {
-        body = await response.json();
-      } catch {
-        body = await response.text().catch(() => undefined);
-      }
+      const body = await readErrorBody(response);
+      if (writeRequest) observeWriteFailure(response.status, body);
       throw new CloudApiError(`Cloud request failed (${response.status})`, response.status, body);
     }
 
+    if (writeRequest) noteCloudWriteSuccess();
     if (response.status === 204) return { data: undefined as T, response };
     return { data: (await response.json()) as T, response };
   }
@@ -189,15 +216,18 @@ export class TtsuCloudApi {
       const directPath =
         `/v1/books/${encodeURIComponent(bookId)}/assets/${kind}/direct` +
         `?size=${file.size}&fileName=${encodeURIComponent(file.name)}`;
+      assertCloudWriteAllowed();
       const response = await fetchWithTimeout(
         `${this.baseUrl}${directPath}`,
         { method: 'PUT', headers, body: file, signal: options.signal },
         DIRECT_UPLOAD_TIMEOUT_MS,
       );
       if (!response.ok) {
-        const body = await response.json().catch(() => undefined);
+        const body = await readErrorBody(response);
+        observeWriteFailure(response.status, body);
         throw new CloudApiError(`Asset upload failed (${response.status})`, response.status, body);
       }
+      noteCloudWriteSuccess();
       options.onProgress?.(file.size, file.size);
       return;
     }
@@ -237,6 +267,10 @@ export class TtsuCloudApi {
         } catch (error) {
           lastError = error;
           if (options.signal?.aborted) throw error;
+          // A 429 opens the shared write circuit. Retrying multipart chunks a
+          // few hundred milliseconds later cannot succeed and only makes the
+          // upload look hung, so surface the pause immediately.
+          if (error instanceof CloudApiError && error.status === 429) throw error;
           if (attempt < retries) await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
         }
       }
@@ -331,6 +365,7 @@ export class TtsuCloudApi {
     progress: Omit<CloudProgress, 'version' | 'bookId' | 'updatedAt'>,
     etag?: string,
   ): Promise<ProgressSnapshot> {
+    assertCloudWriteAllowed();
     const headers = new Headers({
       authorization: `Bearer ${this.token}`,
       'content-type': 'application/json',
@@ -342,7 +377,12 @@ export class TtsuCloudApi {
       body: JSON.stringify(progress),
     });
     if (response.status === 412) throw new CloudApiError('Progress changed on another device', 412);
-    if (!response.ok) throw new CloudApiError(`Progress save failed (${response.status})`, response.status);
+    if (!response.ok) {
+      const body = await readErrorBody(response);
+      observeWriteFailure(response.status, body);
+      throw new CloudApiError(`Progress save failed (${response.status})`, response.status, body);
+    }
+    noteCloudWriteSuccess();
     return {
       progress: (await response.json()) as CloudProgress,
       etag: response.headers.get('etag') || undefined,
