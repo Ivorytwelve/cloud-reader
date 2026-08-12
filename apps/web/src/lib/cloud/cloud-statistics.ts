@@ -2,34 +2,25 @@ import type { BooksDbStatistic } from '$lib/data/database/books-db/versions/book
 import { database } from '$lib/data/store';
 import { MergeMode } from '$lib/data/merge-mode';
 import { ReplicationSaveBehavior } from '$lib/functions/replication/replication-options';
+import { CloudApiError } from './api';
 import { getConfiguredCloudApi } from './progress-session';
 import { getOrCreateDeviceId } from './progress-sync';
 import type { CloudStatisticAggregate, CloudStatisticSnapshot } from './types';
+import {
+  acknowledgeCloudStatisticSnapshot,
+  cloudStatisticSnapshotKey,
+  getDirtyCloudStatisticSnapshots,
+  hasDirtyCloudStatistics,
+  loadCloudStatisticContributions,
+  markCloudStatisticDirty,
+  saveCloudStatisticContributions
+} from './statistics-upload-queue';
 
-const CONTRIBUTIONS_KEY = 'ttu-cloud-stat-contributions-v1';
 const CLOUD_STATS_TITLES_KEY = 'ttu-cloud-stat-titles-v1';
-const pendingUploads = new Map<string, Promise<void>>();
+const CLOUD_STAT_FLUSH_DELAY_MS = 15_000;
+const CLOUD_STAT_RETRY_DELAY_MS = 60_000;
 let uploadTimer: ReturnType<typeof setTimeout> | undefined;
-
-interface ContributionMap {
-  [key: string]: CloudStatisticSnapshot;
-}
-
-function loadContributions(storage: Storage = localStorage): ContributionMap {
-  try {
-    return JSON.parse(storage.getItem(CONTRIBUTIONS_KEY) || '{}') as ContributionMap;
-  } catch {
-    return {};
-  }
-}
-
-function saveContributions(value: ContributionMap, storage: Storage = localStorage) {
-  storage.setItem(CONTRIBUTIONS_KEY, JSON.stringify(value));
-}
-
-function snapshotKey(bookId: string, dateKey: string) {
-  return `${bookId}\u0000${dateKey}`;
-}
+let flushInFlight: Promise<void> | undefined;
 
 export function recordCloudStatisticDelta(input: {
   bookId: string;
@@ -45,8 +36,8 @@ export function recordCloudStatisticDelta(input: {
   if (!api || !input.bookId || !input.dateKey) return;
 
   const deviceId = getOrCreateDeviceId();
-  const key = snapshotKey(input.bookId, input.dateKey);
-  const map = loadContributions();
+  const key = cloudStatisticSnapshotKey(input.bookId, input.dateKey);
+  const map = loadCloudStatisticContributions();
   const old = map[key];
   const next: CloudStatisticSnapshot = {
     version: 1,
@@ -63,7 +54,8 @@ export function recordCloudStatisticDelta(input: {
     completedData: input.completedData || old?.completedData
   };
   map[key] = next;
-  saveContributions(map);
+  saveCloudStatisticContributions(map);
+  markCloudStatisticDirty(key, next);
   scheduleCloudStatisticFlush();
 }
 
@@ -76,38 +68,68 @@ export function recordCloudCompletion(input: {
   recordCloudStatisticDelta({ ...input, completedBook: 1 });
 }
 
-export function scheduleCloudStatisticFlush(delay = 900) {
+export function scheduleCloudStatisticFlush(delay = CLOUD_STAT_FLUSH_DELAY_MS) {
+  if (typeof window === 'undefined' || uploadTimer) return;
+  setCloudStatisticFlushTimer(delay);
+}
+
+function scheduleCloudStatisticRetry(delay = CLOUD_STAT_RETRY_DELAY_MS) {
   if (typeof window === 'undefined') return;
+  // A 429/backoff must replace a shorter normal flush timer that may have been
+  // scheduled by a delta arriving while the rejected request was in flight.
   if (uploadTimer) clearTimeout(uploadTimer);
+  setCloudStatisticFlushTimer(delay);
+}
+
+function setCloudStatisticFlushTimer(delay: number) {
   uploadTimer = setTimeout(() => {
     uploadTimer = undefined;
-    void flushPendingCloudStatistics();
+    void flushPendingCloudStatistics().catch(() => undefined);
   }, delay);
 }
 
 export async function flushPendingCloudStatistics(): Promise<void> {
   if (typeof localStorage === 'undefined') return;
+  if (flushInFlight) return flushInFlight;
+
   const api = getConfiguredCloudApi();
   if (!api) return;
 
-  const contributions = loadContributions();
-  const snapshots = Object.values(contributions);
-  for (const snapshot of snapshots) {
-    const key = snapshotKey(snapshot.bookId, snapshot.dateKey);
-    const previous = pendingUploads.get(key) || Promise.resolve();
-    const task = previous
-      .catch(() => undefined)
-      .then(async () => {
-        const latest = loadContributions()[key];
-        if (!latest) return;
-        await api.putStatisticSnapshot(latest);
-      })
-      .finally(() => {
-        if (pendingUploads.get(key) === task) pendingUploads.delete(key);
-      });
-    pendingUploads.set(key, task);
-  }
-  await Promise.allSettled([...pendingUploads.values()]);
+  let followupDelay: number | undefined;
+  flushInFlight = (async () => {
+    const dirtySnapshots = getDirtyCloudStatisticSnapshots();
+    for (const { key, fingerprint, snapshot } of dirtySnapshots) {
+      try {
+        await api.putStatisticSnapshot(snapshot);
+        acknowledgeCloudStatisticSnapshot(key, fingerprint);
+      } catch (error) {
+        // Keep the exact cumulative snapshot dirty. In particular, stop after a
+        // 429 instead of hammering the Worker with every historical row.
+        if (isRetryableStatisticUploadError(error)) {
+          followupDelay = CLOUD_STAT_RETRY_DELAY_MS;
+        }
+        throw error;
+      }
+    }
+
+    // A new delta may have arrived while the last request was in flight. It is
+    // still dirty, but should use the normal coalescing delay rather than the
+    // failure backoff.
+    if (hasDirtyCloudStatistics()) followupDelay = CLOUD_STAT_FLUSH_DELAY_MS;
+  })().finally(() => {
+    flushInFlight = undefined;
+    if (followupDelay !== undefined && hasDirtyCloudStatistics()) {
+      if (followupDelay === CLOUD_STAT_RETRY_DELAY_MS) scheduleCloudStatisticRetry(followupDelay);
+      else scheduleCloudStatisticFlush(followupDelay);
+    }
+  });
+
+  return flushInFlight;
+}
+
+function isRetryableStatisticUploadError(error: unknown): boolean {
+  if (!(error instanceof CloudApiError)) return true;
+  return error.status === 408 || error.status === 429 || error.status >= 500;
 }
 
 function toBooksDbStatistic(stat: CloudStatisticAggregate): BooksDbStatistic {

@@ -91,6 +91,15 @@ export class CloudProgressSync {
           this.queued = mergeUpdates(retry, this.queued);
           continue;
         }
+
+        // Transient failures (notably 429s) must not silently discard the last
+        // progress snapshot. Keep it queued; a later save/explicit retry will
+        // merge in anything newer and try again. Permanent 4xx failures are not
+        // retained, otherwise a later unrelated reader save could resurrect a
+        // rejected/stale audiobook field.
+        if (isRetryableProgressError(error)) {
+          this.queued = mergeUpdates(pending, this.queued);
+        }
         throw error;
       } finally {
         this.saving = undefined;
@@ -111,6 +120,12 @@ export class CloudProgressSync {
         : this.latest?.audiobook
     };
   }
+}
+
+
+function isRetryableProgressError(error: unknown): boolean {
+  if (!(error instanceof CloudApiError)) return true;
+  return error.status === 408 || error.status === 429 || error.status >= 500;
 }
 
 function fieldsUnchangedRemotely(
