@@ -13,6 +13,7 @@ import {
   duration$,
   extensionData$,
   lastError$,
+  paused$,
   playbackRate$,
   pendingCloudResumeTime$
 } from '$lib/whispersync-upstream/lib/stores';
@@ -21,11 +22,19 @@ import { getCloudLinkByLocalBookId, linkCloudBook } from '$lib/cloud/book-links'
 import { applyCloudAlignmentIfNeeded, suppressCloudAlignment } from '$lib/cloud/local-library';
 import { getCloudProgressSession, getConfiguredCloudApi } from '$lib/cloud/progress-session';
 import { activeCloudBookId$, cloudAudiobookTrackingActive$ } from '$lib/cloud/audiobook-tracking';
-import type { CloudAlignmentInfo, CloudBook } from '$lib/cloud/types';
+import type { CloudAlignmentInfo, CloudBook, CloudProgress } from '$lib/cloud/types';
 
 let activeCloudBookId: string | undefined;
 let activeCloudHasAudio = false;
 let lastCloudSaveAt = 0;
+
+// A dormant browser tab must never be able to push its stale player state over
+// newer cloud progress. Writes are disarmed whenever the page leaves the
+// foreground and are only re-armed after a fresh cloud read has completed.
+let cloudAudioWritesArmed = false;
+let cloudAudioUserDirty = false;
+let cloudAudioRevalidation: Promise<void> | undefined;
+let cloudAudioNeedsRevalidation = false;
 
 export async function openCloudAudiobook(api: TtsuCloudApi, book: CloudBook): Promise<void> {
   activeCloudBookId = book.id;
@@ -33,6 +42,9 @@ export async function openCloudAudiobook(api: TtsuCloudApi, book: CloudBook): Pr
   activeCloudHasAudio = !!book.assets.audio;
   cloudAudiobookTrackingActive$.next(activeCloudHasAudio);
   lastCloudSaveAt = 0;
+  cloudAudioWritesArmed = false;
+  cloudAudioUserDirty = false;
+  cloudAudioNeedsRevalidation = false;
   // Avoid subtitle parsing being clamped to a stale duration from the previous
   // SPA-opened book. The upload pipeline records duration when the browser can
   // read it; otherwise 0 means "do not clamp" until audio metadata arrives.
@@ -70,18 +82,7 @@ export async function openCloudAudiobook(api: TtsuCloudApi, book: CloudBook): Pr
   if (!session) throw new Error('Cloud progress session is unavailable');
   await session.loaded;
   const remoteProgress = session.sync.current;
-  const resumeAt = remoteProgress?.audiobook?.seconds;
-
-  // Cloud Reader is the only persistence source for remote audio. Keep the
-  // resume point in a dedicated one-shot store that cannot be overwritten by
-  // the new <audio> element's initial currentTime=0 binding.
-  const playbackPosition = Number.isFinite(resumeAt) ? resumeAt! : 0;
-  const extensionData = get(extensionData$);
-  pendingCloudResumeTime$.set(playbackPosition);
-  currentTime$.set(playbackPosition);
-  extensionData$.set({ ...extensionData, playbackPosition });
-
-  if (remoteProgress?.audiobook?.playbackRate) playbackRate$.set(remoteProgress.audiobook.playbackRate);
+  applyAuthoritativeCloudAudiobookProgress(remoteProgress, false);
 
   const [audioUrl, audioCoverUrl] = await Promise.all([
     api.getSignedAssetUrl(book.id, 'audio'),
@@ -100,6 +101,10 @@ export async function openCloudAudiobook(api: TtsuCloudApi, book: CloudBook): Pr
     audioSourceUrl: audioUrl,
     chapters: book.audio?.chapters || []
   });
+
+  // Loading the source itself may emit timeupdate/pause events. They are not
+  // user progress, so only arm writes after the remote source has been seeded.
+  cloudAudioWritesArmed = true;
 }
 
 /**
@@ -141,8 +146,62 @@ export async function autoOpenCloudAudiobookForLocalBook(localBookId: number): P
   return !!(cloudBook.assets.audio || cloudBook.assets.subtitles);
 }
 
+
+function applyAuthoritativeCloudAudiobookProgress(
+  progress: CloudProgress | undefined,
+  notifyLoadedPlayer: boolean
+): void {
+  const audiobook = progress?.audiobook;
+  const seconds = Number.isFinite(audiobook?.seconds) ? audiobook.seconds : 0;
+  const extensionData = get(extensionData$);
+
+  cloudAudioUserDirty = false;
+
+  pendingCloudResumeTime$.set(seconds);
+  currentTime$.set(seconds);
+  extensionData$.set({ ...extensionData, playbackPosition: seconds });
+
+  if (audiobook?.playbackRate) playbackRate$.set(audiobook.playbackRate);
+
+  if (notifyLoadedPlayer) {
+    document.dispatchEvent(
+      new CustomEvent('ttu-cloud:apply-audiobook-position', {
+        detail: { seconds, playbackRate: audiobook?.playbackRate }
+      })
+    );
+  }
+}
+
+async function revalidateActiveCloudAudiobook(): Promise<void> {
+  if (!activeCloudBookId || !activeCloudHasAudio || document.visibilityState === 'hidden') return;
+  if (cloudAudioRevalidation) return cloudAudioRevalidation;
+
+  const bookId = activeCloudBookId;
+  cloudAudioWritesArmed = false;
+
+  cloudAudioRevalidation = (async () => {
+    const session = getCloudProgressSession(bookId);
+    if (!session) return;
+
+    await session.loaded;
+    const remote = await session.sync.load();
+
+    // The user may have navigated to a different book while the request was in flight.
+    if (activeCloudBookId !== bookId) return;
+
+    applyAuthoritativeCloudAudiobookProgress(remote, true);
+    lastCloudSaveAt = 0;
+    cloudAudioNeedsRevalidation = false;
+    cloudAudioWritesArmed = true;
+  })().finally(() => {
+    cloudAudioRevalidation = undefined;
+  });
+
+  return cloudAudioRevalidation;
+}
+
 export async function saveCloudAudiobookProgress(force = false): Promise<void> {
-  if (!activeCloudBookId) return;
+  if (!activeCloudBookId || !cloudAudioWritesArmed || !cloudAudioUserDirty) return;
 
   // IMPORTANT: snapshot the player state synchronously, before the first await.
   //
@@ -170,12 +229,18 @@ export async function saveCloudAudiobookProgress(force = false): Promise<void> {
       playbackRate
     }
   });
+
 }
+
 
 export function clearCloudAudiobookSession(): void {
   activeCloudBookId = undefined;
   activeCloudBookId$.next(undefined);
   lastCloudSaveAt = 0;
+  cloudAudioWritesArmed = false;
+  cloudAudioUserDirty = false;
+  cloudAudioRevalidation = undefined;
+  cloudAudioNeedsRevalidation = false;
   if (activeCloudHasAudio) {
     currentRemoteAudioFileName$.set('');
     pendingCloudResumeTime$.set(null);
@@ -210,10 +275,24 @@ export function installCloudAudiobookProgressEvents(): () => void {
   if (progressEventInstalled) return () => undefined;
   progressEventInstalled = true;
 
+  const onUserActivity = () => {
+    if (!activeCloudBookId || !cloudAudioWritesArmed || cloudAudioRevalidation) return;
+    cloudAudioUserDirty = true;
+  };
+
   const onProgress = (event: Event) => {
-    if (!activeCloudBookId) return;
+    if (!activeCloudBookId || !cloudAudioWritesArmed || cloudAudioRevalidation) return;
+
     const detail = (event as CustomEvent<CloudAudiobookProgressEventDetail>).detail;
     if (!detail || !Number.isFinite(detail.seconds)) return;
+    // A hidden tab may continue genuine background playback. Allow those moving
+    // updates, but never let a suspension-generated hidden pause event write.
+    if (document.visibilityState === 'hidden' && detail.paused) return;
+
+    // Continuous playback is itself user activity. Paused timeupdate events are
+    // only writable after an explicit player interaction (seek/control click).
+    if (!detail.paused) cloudAudioUserDirty = true;
+    if (!cloudAudioUserDirty) return;
 
     const now = Date.now();
     const shouldSave = detail.paused || now - lastCloudSaveAt >= 5_000;
@@ -244,7 +323,38 @@ export function installCloudAudiobookProgressEvents(): () => void {
   };
 
   const onVisibilityChange = () => {
-    if (document.visibilityState === 'hidden') void saveCloudAudiobookProgress(true).catch(() => undefined);
+    if (document.visibilityState === 'hidden') {
+      // Save the last genuine foreground position before suspension. A paused
+      // reader is then fully disarmed. If audio is actively playing, moving
+      // background timeupdates may continue to sync, but hidden pause/reset
+      // events are ignored by onProgress.
+      const pending = saveCloudAudiobookProgress(true);
+      cloudAudioNeedsRevalidation = true;
+      if (get(paused$)) {
+        cloudAudioWritesArmed = false;
+        cloudAudioUserDirty = false;
+      }
+      void pending.catch(() => undefined);
+      return;
+    }
+
+    if (!cloudAudioNeedsRevalidation) return;
+    cloudAudioWritesArmed = false;
+    void revalidateActiveCloudAudiobook().catch(() => undefined);
+  };
+
+  const onWindowFocus = () => {
+    if (!cloudAudioNeedsRevalidation) return;
+    cloudAudioWritesArmed = false;
+    void revalidateActiveCloudAudiobook().catch(() => undefined);
+  };
+
+  const onPageShow = () => {
+    // pageshow also covers browsers restoring a frozen/BFCache page where a
+    // normal visibilitychange may never have run.
+    cloudAudioNeedsRevalidation = true;
+    cloudAudioWritesArmed = false;
+    void revalidateActiveCloudAudiobook().catch(() => undefined);
   };
 
   const onAlignmentSaved = (event: Event) => {
@@ -268,18 +378,24 @@ export function installCloudAudiobookProgressEvents(): () => void {
     if (link) suppressCloudAlignment(link.cloudBookId, true);
   };
 
+  document.addEventListener('ttu-cloud:audiobook-user-activity', onUserActivity as EventListener);
   document.addEventListener('ttu-cloud:audiobook-progress', onProgress as EventListener);
   document.addEventListener('ttu-cloud:flush-audiobook-progress', onFlushProgress as EventListener);
   document.addEventListener('ttu-cloud:alignment-saved', onAlignmentSaved as EventListener);
   document.addEventListener('ttu-cloud:alignment-reset', onAlignmentReset as EventListener);
   document.addEventListener('visibilitychange', onVisibilityChange);
+  window.addEventListener('focus', onWindowFocus);
+  window.addEventListener('pageshow', onPageShow);
 
   return () => {
+    document.removeEventListener('ttu-cloud:audiobook-user-activity', onUserActivity as EventListener);
     document.removeEventListener('ttu-cloud:audiobook-progress', onProgress as EventListener);
     document.removeEventListener('ttu-cloud:flush-audiobook-progress', onFlushProgress as EventListener);
     document.removeEventListener('ttu-cloud:alignment-saved', onAlignmentSaved as EventListener);
     document.removeEventListener('ttu-cloud:alignment-reset', onAlignmentReset as EventListener);
     document.removeEventListener('visibilitychange', onVisibilityChange);
+    window.removeEventListener('focus', onWindowFocus);
+    window.removeEventListener('pageshow', onPageShow);
     progressEventInstalled = false;
   };
 }

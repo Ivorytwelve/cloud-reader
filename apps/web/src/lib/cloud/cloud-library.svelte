@@ -665,18 +665,34 @@
 
   function progressPercent(book: CloudBook): number {
     const progress = progressByBook.get(book.id);
-    const reader = progress?.reader?.percentage;
-    const readerPercent = typeof reader === 'number' && Number.isFinite(reader) ? clamp(reader) : 0;
-
     const seconds = progress?.audiobook?.seconds;
     const duration = progress?.audiobook?.duration || book.audio?.duration;
-    const audioPercent = typeof seconds === 'number' && duration ? clamp(seconds / duration) : 0;
-    return Math.max(readerPercent, audioPercent);
+
+    // Audiobook cards show audiobook progress. EPUB-only titles keep reader progress.
+    if (book.assets.audio && duration) {
+      return typeof seconds === 'number' && Number.isFinite(seconds)
+        ? clamp(seconds / duration)
+        : 0;
+    }
+
+    const reader = progress?.reader?.percentage;
+    return typeof reader === 'number' && Number.isFinite(reader) ? clamp(reader) : 0;
   }
 
   function progressText(book: CloudBook): string {
     const progress = progressByBook.get(book.id);
-    if (progress?.audiobook?.seconds) return `Audio ${formatTime(progress.audiobook.seconds)}`;
+    const seconds = progress?.audiobook?.seconds;
+    const duration = progress?.audiobook?.duration || book.audio?.duration;
+
+    if (book.assets.audio && duration) {
+      const current = typeof seconds === 'number' && Number.isFinite(seconds) ? seconds : 0;
+      return `Audio ${formatTime(current)} / ${formatTime(duration)}`;
+    }
+
+    if (typeof seconds === 'number' && Number.isFinite(seconds)) {
+      return `Audio ${formatTime(seconds)}`;
+    }
+
     const percentage = progressPercent(book);
     return percentage ? `${(percentage * 100).toFixed(1)}%` : 'Not started';
   }
@@ -719,7 +735,7 @@
 
 <section class="cloud-library-shell relative z-[1] grid h-full min-h-0 min-w-0 grid-rows-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2 overflow-hidden py-2">
   {#if showUpload && api}
-    <div class="absolute inset-0 z-30 flex items-start justify-center bg-[#E3F2FD]/85 px-2 pt-3 backdrop-blur-[2px]">
+    <div class="absolute inset-0 z-30 flex items-start justify-center bg-white/90 px-2 pt-3 backdrop-blur-[2px]">
       <div class="w-full max-w-3xl rounded-2xl border border-[#90CAF9] bg-[#F7FBFF] p-4 shadow-xl">
         <div class="mb-3 flex items-center justify-between gap-3">
           <h2 class="font-semibold">Add to cloud library</h2>
@@ -818,9 +834,9 @@
           on:wheel|nonpassive={(event) => onShelfWheel(event, libraryScroller)}
         >
           {#each libraryBooks as book (book.id)}
-            <article class="cloud-book-card group relative flex-none overflow-hidden rounded-xl border border-[#90CAF9]/65 bg-[#E3F2FD]/70 shadow-sm">
-              <button class="block w-full text-left" on:click={() => void openCloudBook(book)} disabled={loading} title={`Open ${book.title}`}>
-                <div class="aspect-[2/3] bg-[#E3F2FD]/80">
+            <article class="cloud-book-card group relative flex-none">
+              <button class="cloud-book-button block w-full text-left" on:click={() => void openCloudBook(book)} disabled={loading} title={`Open ${book.title}`}>
+                <div class="aspect-[2/3] bg-[#F8FAFC]">
                   {#if coverUrlByBook.get(book.id)}
                     <img
                       class="book-cover h-full w-full object-cover"
@@ -835,10 +851,10 @@
                     <div class="flex h-full items-center justify-center text-4xl opacity-25"><Fa icon={faCloud} /></div>
                   {/if}
                 </div>
-                <div class="bg-[#E3F2FD] p-2.5">
+                <div class="cloud-book-info p-2.5">
                   <div class="line-clamp-2 min-h-[2.5rem] text-sm font-medium">{book.title}</div>
                   {#if book.author}<div class="mt-0.5 line-clamp-1 text-xs opacity-50">{book.author}</div>{/if}
-                  <div class="mt-1.5 text-xs opacity-60">{progressText(book)}</div>
+                  <div class="cloud-book-progress mt-1.5 whitespace-nowrap text-[0.68rem] opacity-60">{progressText(book)}</div>
                   <div class="mt-1.5 h-1 overflow-hidden rounded-full bg-[#90CAF9]/45">
                     <div class="h-full rounded-full bg-[#2196F3]" style:width={`${progressPercent(book) * 100}%`} />
                   </div>
@@ -895,9 +911,9 @@
           on:wheel|nonpassive={(event) => onShelfWheel(event, historyScroller)}
         >
           {#each historyBooks as book (book.id)}
-            <article class="cloud-book-card group relative flex-none overflow-hidden rounded-xl border border-[#90CAF9]/65 bg-[#E3F2FD]/70 shadow-sm">
-              <button class="block w-full text-left" on:click={() => void openCloudBook(book)} disabled={loading} title={`Open ${book.title}`}>
-                <div class="relative aspect-[2/3] bg-[#E3F2FD]/80">
+            <article class="cloud-book-card group relative flex-none">
+              <button class="cloud-book-button block w-full text-left" on:click={() => void openCloudBook(book)} disabled={loading} title={`Open ${book.title}`}>
+                <div class="relative aspect-[2/3] bg-[#F8FAFC]">
                   {#if coverUrlByBook.get(book.id)}
                     <img
                       class="book-cover h-full w-full object-cover"
@@ -913,7 +929,7 @@
                   {/if}
                   <span class="absolute bottom-2 left-2 rounded-lg bg-black/65 px-2 py-1 text-[0.65rem] text-white">Read</span>
                 </div>
-                <div class="bg-[#E3F2FD] p-2.5">
+                <div class="cloud-book-info p-2.5">
                   <div class="line-clamp-2 min-h-[2.5rem] text-sm font-medium">{book.title}</div>
                   {#if book.author}<div class="mt-0.5 line-clamp-1 text-xs opacity-50">{book.author}</div>{/if}
                   <div class="mt-1.5 text-xs opacity-60">{formatFinishedDate(book.finishedAt)}</div>
@@ -982,6 +998,15 @@
 </section>
 
 <style>
+  :global(:root) {
+    --card-accent: #ffffff;
+    --card-border: #bbdefb;
+  }
+
+  .cloud-library-shell {
+    background: #ffffff;
+  }
+
   .cloud-shelf {
     display: flex;
     min-width: 0;
@@ -1002,6 +1027,7 @@
     width: 100%;
     max-width: 100%;
     min-width: 0;
+    align-items: flex-start;
     scrollbar-width: none;
     -ms-overflow-style: none;
     overscroll-behavior-x: contain;
@@ -1011,6 +1037,8 @@
 
   .cloud-shelf-scroll::-webkit-scrollbar {
     display: none;
+    width: 0;
+    height: 0;
   }
 
   .cloud-shelf-mask-right {
@@ -1029,8 +1057,51 @@
   }
 
   .cloud-book-card {
-    /* Fit one card comfortably inside half of the remaining viewport while
-       still allowing the larger covers on normal desktop heights. */
-    width: clamp(135px, calc(33.333dvh - 93px), 200px);
+    width: clamp(135px, min(44vw, calc(33.333dvh - 120px)), 200px);
+    overflow: hidden;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    background: var(--card-accent);
+    box-shadow: 0 2px 4px rgb(0 0 0 / 4%);
+    transition:
+      transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+      box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+      border-color 0.25s ease;
+  }
+
+  .cloud-book-card:hover,
+  .cloud-book-card:focus-within {
+    transform: translateY(-5px);
+    border-color: var(--card-border);
+    box-shadow: 0 12px 20px -5px rgb(144 202 249 / 30%);
+  }
+
+  .cloud-book-button {
+    background: #ffffff;
+  }
+
+  .cloud-book-info {
+    min-height: 5.25rem;
+    border-top: 1px solid rgb(0 0 0 / 3%);
+    background: var(--card-accent);
+    transition: background-color 0.25s ease;
+  }
+
+  .cloud-book-info :global(.font-medium) {
+    color: #1e293b;
+  }
+
+  .cloud-book-progress {
+    letter-spacing: -0.01em;
+  }
+
+  @media (max-width: 520px) {
+    .cloud-book-card {
+      width: clamp(132px, min(40vw, calc(33.333dvh - 120px)), 172px);
+    }
+
+    .cloud-book-info {
+      min-height: 5.4rem;
+    }
   }
 </style>

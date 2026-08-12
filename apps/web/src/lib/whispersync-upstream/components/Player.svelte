@@ -71,6 +71,32 @@
 	let audioMetadataReady = false;
 	let cloudInitialSeekPending = false;
 
+	function notifyCloudAudiobookUserActivity() {
+		if (!$currentRemoteAudioFileName$) return;
+		document.dispatchEvent(new CustomEvent('ttu-cloud:audiobook-user-activity'));
+	}
+
+	function applyCloudAudiobookPosition(event: Event) {
+		if (!$currentRemoteAudioFileName$) return;
+		const detail = (event as CustomEvent<{ seconds?: number; playbackRate?: number }>).detail;
+		const seconds = Number(detail?.seconds);
+		if (!Number.isFinite(seconds) || seconds < 0) return;
+
+		pendingCloudResumeTime$.set(seconds);
+		$currentTime$ = seconds;
+		$extensionData$.playbackPosition = seconds;
+		$extensionData$ = $extensionData$;
+
+		const rate = Number(detail?.playbackRate);
+		if (Number.isFinite(rate) && rate > 0) {
+			$playbackRate$ = rate;
+		}
+
+		if (audioElement && audioMetadataReady) {
+			audioElement.currentTime = seconds;
+		}
+	}
+
 	// The recorder stack depends on Web Workers. Keep it out of SvelteKit SSR/prerender
 	// and load it only when the user actually records audio for an export.
 	async function startAudioRecording(audioElement: HTMLAudioElement) {
@@ -226,12 +252,14 @@
 
 	onMount(() => {
 		document.addEventListener('ttsu:section.change', updateCSSClasses, false);
+		document.addEventListener('ttu-cloud:apply-audiobook-position', applyCloudAudiobookPosition as EventListener);
 
 		jpdbPopover = document.getElementById('jpdb-popup');
 	});
 
 	onDestroy(() => {
 		document.removeEventListener('ttsu:section.change', updateCSSClasses, false);
+		document.removeEventListener('ttu-cloud:apply-audiobook-position', applyCloudAudiobookPosition as EventListener);
 
 		yomiObserver.disconnect();
 		dictionaryObserver.disconnect();
@@ -382,6 +410,7 @@
 		if (stopEvent) {
 			event.preventDefault();
 			event.stopPropagation();
+			notifyCloudAudiobookUserActivity();
 		}
 
 		executeAction(action, targetSubtitle, { keepPauseState });
@@ -586,6 +615,7 @@
 	}
 
 	async function onProgressClick() {
+		notifyCloudAudiobookUserActivity();
 		await tick();
 
 		executeAction(Action.RESTART_PLAYBACK, getDummySubtitle(timeStringToSeconds(progressToolTip)), {
@@ -976,7 +1006,7 @@
 <svelte:document bind:visibilityState />
 <svelte:window on:blur={onBlur} on:focus={onFocus} on:keydown={onKeyDown} />
 
-<div class="flex items-center w-full m-t-b" class:invisible={!$currentAudioLoaded$}>
+<div class="flex items-center w-full m-t-b" class:invisible={!$currentAudioLoaded$} on:click={notifyCloudAudiobookUserActivity} role="presentation">
 	<button
 		title="Toggle playback"
 		class="m-x-xs"

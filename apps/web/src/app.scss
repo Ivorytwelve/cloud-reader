@@ -11,13 +11,13 @@
   --ttu-blue-200: #90caf9;
   --ttu-blue-500: #2196f3;
   --ttu-blue-900: #0d47a1;
-  --ttu-surface: color-mix(in srgb, #e3f2fd 42%, white);
-  --ttu-surface-hover: color-mix(in srgb, #90caf9 38%, white);
+  --ttu-surface: #ffffff;
+  --ttu-surface-hover: color-mix(in srgb, #90caf9 22%, white);
   --ttu-ink: #16283d;
   --ttu-ink-muted: #546575;
 
   --font-color: var(--ttu-ink);
-  --background-color: var(--ttu-blue-050);
+  --background-color: #ffffff;
   scrollbar-color: var(--ttu-blue-500) color-mix(in srgb, var(--ttu-blue-200) 38%, transparent);
   accent-color: var(--ttu-blue-500);
 }
