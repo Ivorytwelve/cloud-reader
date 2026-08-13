@@ -30,6 +30,7 @@ const CLOUD_AUDIO_SAVE_INTERVAL_MS = 5_000;
 const CLOUD_AUDIO_RETRY_MIN_MS = 5_000;
 const CLOUD_AUDIO_RETRY_MAX_MS = 60_000;
 const CLOUD_AUDIO_REVALIDATE_RETRY_MS = 5_000;
+const CLOUD_AUDIO_RUNTIME_SEEK_TOLERANCE_SECONDS = 0.75;
 const CLOUD_AUDIO_TAB_REVISION_KEY = 'ttu-cloud-audiobook-revision-v1';
 
 let activeCloudBookId: string | undefined;
@@ -163,7 +164,8 @@ export async function autoOpenCloudAudiobookForLocalBook(localBookId: number): P
 
 function applyAuthoritativeCloudAudiobookProgress(
   progress: CloudProgress | undefined,
-  notifyLoadedPlayer: boolean
+  notifyLoadedPlayer: boolean,
+  reason: 'initial' | 'conflict' | 'revalidation' = 'initial'
 ): void {
   const audiobook = progress?.audiobook;
   const seconds = Number.isFinite(audiobook?.seconds) ? audiobook.seconds : 0;
@@ -180,16 +182,24 @@ function applyAuthoritativeCloudAudiobookProgress(
       : undefined
   );
 
-  pendingCloudResumeTime$.set(seconds);
-  currentTime$.set(seconds);
-  extensionData$.set({ ...extensionData, playbackPosition: seconds });
+  const currentSeconds = get(currentTime$);
+  const shouldApplyPosition =
+    !notifyLoadedPlayer ||
+    !Number.isFinite(currentSeconds) ||
+    Math.abs(currentSeconds - seconds) > CLOUD_AUDIO_RUNTIME_SEEK_TOLERANCE_SECONDS;
+
+  if (shouldApplyPosition) {
+    pendingCloudResumeTime$.set(seconds);
+    currentTime$.set(seconds);
+    extensionData$.set({ ...extensionData, playbackPosition: seconds });
+  }
 
   if (audiobook?.playbackRate) playbackRate$.set(audiobook.playbackRate);
 
-  if (notifyLoadedPlayer) {
+  if (notifyLoadedPlayer && shouldApplyPosition) {
     document.dispatchEvent(
       new CustomEvent('ttu-cloud:apply-audiobook-position', {
-        detail: { seconds, playbackRate: audiobook?.playbackRate }
+        detail: { seconds, playbackRate: audiobook?.playbackRate, reason }
       })
     );
   }
@@ -278,6 +288,7 @@ async function drainCloudAudiobookProgress(force: boolean, allowDisarmed = false
     if (activeCloudBookId !== bookId) return;
     if (!allowDisarmed && (!cloudAudioWritesArmed || cloudAudioRevalidation)) return;
 
+    const conflictRevisionBefore = session.sync.audiobookConflictRevision;
     const saved = await session.sync.save({
       audiobook: {
         seconds: sent.seconds,
@@ -289,24 +300,26 @@ async function drainCloudAudiobookProgress(force: boolean, allowDisarmed = false
 
     if (activeCloudBookId !== bookId) return;
 
-    // CloudProgressSync resolves a same-field 412 with the remote winner rather
-    // than throwing. Because we supplied an explicit updatedAt token, equality
-    // tells us whether this exact audiobook snapshot was accepted.
-    if (saved?.audiobook?.updatedAt !== sent.updatedAt) {
+    // A save() call may return a newer locally coalesced session snapshot than
+    // the exact token this drain sent. That is not a remote conflict and must
+    // never seek the player. Only a real same-field 412 increments the conflict
+    // revision in CloudProgressSync.
+    const audiobookConflict = session.sync.audiobookConflictRevision !== conflictRevisionBefore;
+    if (audiobookConflict) {
       cloudAudioWriteBuffer.discardPending();
       cloudAudioUserDirty = false;
       cloudAudioNeedsRevalidation = document.visibilityState === 'hidden';
       cloudAudioWritesArmed = document.visibilityState !== 'hidden';
       cloudAudioRetryDelay = CLOUD_AUDIO_RETRY_MIN_MS;
       lastCloudSaveAt = 0;
-      applyAuthoritativeCloudAudiobookProgress(saved, true);
+      applyAuthoritativeCloudAudiobookProgress(saved, true, 'conflict');
       return;
     }
 
     cloudAudioWriteBuffer.acknowledgeSent(sent);
     lastCloudSaveAt = Date.now();
     cloudAudioRetryDelay = CLOUD_AUDIO_RETRY_MIN_MS;
-    announceCloudAudiobookWrite(bookId, sent.updatedAt);
+    announceCloudAudiobookWrite(bookId, saved?.audiobook?.updatedAt ?? sent.updatedAt);
   })();
 
   cloudAudioSaveInFlight = task;
@@ -373,7 +386,7 @@ async function revalidateActiveCloudAudiobook(): Promise<void> {
     // The user may have navigated to a different book while the request was in flight.
     if (activeCloudBookId !== bookId) return;
 
-    applyAuthoritativeCloudAudiobookProgress(remote, true);
+    applyAuthoritativeCloudAudiobookProgress(remote, true, 'revalidation');
     lastCloudSaveAt = 0;
     cloudAudioNeedsRevalidation = false;
     cloudAudioRevalidateRetryAt = 0;

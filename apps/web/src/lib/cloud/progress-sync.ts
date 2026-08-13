@@ -3,8 +3,7 @@ import { announceCloudProgressUpdated } from './cloud-events';
 import type {
   CloudAudiobookProgress,
   CloudProgress,
-  CloudReaderProgress,
-  ProgressSnapshot
+  CloudReaderProgress
 } from './types';
 
 export type ProgressConflictHandler = (remote: CloudProgress | undefined) => void;
@@ -20,8 +19,9 @@ interface ProgressUpdate {
 export class CloudProgressSync {
   private etag?: string;
   private latest?: CloudProgress;
-  private saving?: Promise<ProgressSnapshot>;
+  private saving?: Promise<void>;
   private queued?: ProgressUpdate;
+  private audiobookConflictRevisionValue = 0;
 
   constructor(
     private readonly api: TtsuCloudApi,
@@ -50,6 +50,16 @@ export class CloudProgressSync {
     return this.latest;
   }
 
+  /**
+   * Monotonically increases only when a 412 shows that the remote audiobook
+   * field itself changed. Callers can use this to distinguish a real same-field
+   * conflict from a successful save that merely returned a newer coalesced
+   * snapshot from this session.
+   */
+  get audiobookConflictRevision(): number {
+    return this.audiobookConflictRevisionValue;
+  }
+
   async save(input: ProgressUpdate): Promise<CloudProgress | undefined> {
     const now = Date.now();
     this.queued = mergeUpdates(this.queued, {
@@ -59,20 +69,30 @@ export class CloudProgressSync {
         : undefined
     });
 
-    if (this.saving) {
-      await this.saving.catch(() => undefined);
-      if (!this.queued) return this.latest;
+    // `saving` represents the whole queue drain, not just the current HTTP PUT.
+    // Every concurrent caller therefore waits until the update it contributed has
+    // either been committed, resolved as a 412 conflict, or failed. Previously a
+    // second caller could wake up after the first PUT and return an older snapshot
+    // while the first caller was only then starting the queued second PUT.
+    if (!this.saving) {
+      this.saving = this.drainQueued().finally(() => {
+        this.saving = undefined;
+      });
     }
 
+    await this.saving;
+    return this.latest;
+  }
+
+  private async drainQueued(): Promise<void> {
     while (this.queued) {
       const pending = this.queued;
       this.queued = undefined;
       const base = this.latest;
       const next = this.composePayload(pending);
-      this.saving = this.api.putProgress(this.bookId, next, this.etag);
 
       try {
-        const snapshot = await this.saving;
+        const snapshot = await this.api.putProgress(this.bookId, next, this.etag);
         this.etag = snapshot.etag;
         this.latest = snapshot.progress;
         announceCloudProgressUpdated(this.bookId, this.latest);
@@ -88,6 +108,9 @@ export class CloudProgressSync {
           // remotely. This lets reader+audio updates merge without allowing an
           // old device to rewind a newer position in the same field.
           const retry = fieldsUnchangedRemotely(pending, base, remote.progress);
+          if (pending.audiobook && !retry?.audiobook) {
+            this.audiobookConflictRevisionValue += 1;
+          }
           this.queued = mergeUpdates(retry, this.queued);
           continue;
         }
@@ -101,12 +124,8 @@ export class CloudProgressSync {
           this.queued = mergeUpdates(pending, this.queued);
         }
         throw error;
-      } finally {
-        this.saving = undefined;
       }
     }
-
-    return this.latest;
   }
 
   private composePayload(update: ProgressUpdate) {

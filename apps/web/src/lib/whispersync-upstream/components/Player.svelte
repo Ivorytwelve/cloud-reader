@@ -79,21 +79,29 @@
 
 	function applyCloudAudiobookPosition(event: Event) {
 		if (!$currentRemoteAudioFileName$) return;
-		const detail = (event as CustomEvent<{ seconds?: number; playbackRate?: number }>).detail;
+		const detail = (event as CustomEvent<{ seconds?: number; playbackRate?: number; reason?: string }>).detail;
 		const seconds = Number(detail?.seconds);
 		if (!Number.isFinite(seconds) || seconds < 0) return;
 
-		pendingCloudResumeTime$.set(seconds);
-		$currentTime$ = seconds;
-		$extensionData$.playbackPosition = seconds;
-		$extensionData$ = $extensionData$;
+		// The bridge already filters tiny reconciliation differences, but keep a
+		// second guard here so an accidental duplicate event cannot continuously
+		// re-seek an actively playing HTMLAudioElement.
+		const currentSeconds = audioElement && audioMetadataReady ? audioElement.currentTime : $currentTime$;
+		const shouldSeek = !Number.isFinite(currentSeconds) || Math.abs(currentSeconds - seconds) > 0.75;
+
+		if (shouldSeek) {
+			pendingCloudResumeTime$.set(seconds);
+			$currentTime$ = seconds;
+			$extensionData$.playbackPosition = seconds;
+			$extensionData$ = $extensionData$;
+		}
 
 		const rate = Number(detail?.playbackRate);
 		if (Number.isFinite(rate) && rate > 0) {
 			$playbackRate$ = rate;
 		}
 
-		if (audioElement && audioMetadataReady) {
+		if (shouldSeek && audioElement && audioMetadataReady) {
 			audioElement.currentTime = seconds;
 		}
 	}
