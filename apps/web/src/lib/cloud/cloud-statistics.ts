@@ -30,6 +30,7 @@ export function recordCloudStatisticDelta(input: {
   readingTimeDelta?: number;
   characterDelta?: number;
   completedBook?: number;
+  clearCompletion?: boolean;
   completedData?: CloudStatisticSnapshot['completedData'];
 }) {
   if (typeof localStorage === 'undefined') return;
@@ -40,6 +41,8 @@ export function recordCloudStatisticDelta(input: {
   const key = cloudStatisticSnapshotKey(input.bookId, input.dateKey);
   const map = loadCloudStatisticContributions();
   const old = map[key];
+  const clearingCompletion = Boolean(input.clearCompletion);
+  const settingCompletion = Boolean(input.completedBook || input.completedData);
   const next: CloudStatisticSnapshot = {
     version: 1,
     deviceId,
@@ -51,8 +54,15 @@ export function recordCloudStatisticDelta(input: {
     readingTime: (old?.readingTime || 0) + (Number(input.readingTimeDelta) || 0),
     charactersRead: (old?.charactersRead || 0) + (Number(input.characterDelta) || 0),
     lastStatisticModified: Date.now(),
-    completedBook: input.completedBook || old?.completedBook,
-    completedData: input.completedData || old?.completedData
+    ...(clearingCompletion
+      ? { clearCompletion: true }
+      : settingCompletion
+        ? { completedBook: input.completedBook || 1, completedData: input.completedData }
+        : {
+            ...(old?.completedBook ? { completedBook: old.completedBook } : {}),
+            ...(old?.clearCompletion ? { clearCompletion: true } : {}),
+            ...(old?.completedData ? { completedData: old.completedData } : {})
+          })
   };
   map[key] = next;
   saveCloudStatisticContributions(map);
@@ -67,6 +77,14 @@ export function recordCloudCompletion(input: {
   completedData: CloudStatisticSnapshot['completedData'];
 }) {
   recordCloudStatisticDelta({ ...input, completedBook: 1 });
+}
+
+export function clearCloudCompletion(input: {
+  bookId: string;
+  title: string;
+  dateKey: string;
+}) {
+  recordCloudStatisticDelta({ ...input, clearCompletion: true });
 }
 
 export function scheduleCloudStatisticFlush(delay = CLOUD_STAT_FLUSH_DELAY_MS) {
@@ -150,6 +168,52 @@ function toBooksDbStatistic(stat: CloudStatisticAggregate): BooksDbStatistic {
     ...(stat.completedBook ? { completedBook: 1 } : {}),
     ...(stat.completedData ? { completedData: stat.completedData } : {})
   };
+}
+
+/**
+ * Delete canonical cloud statistic rows matching the same title/date semantics
+ * used by the legacy Statistics UI. The cloud is canonical for cloud books, so
+ * deleting only IndexedDB would make the row reappear on the next cloud sync.
+ *
+ * Pending local contribution snapshots are flushed first. Otherwise a dirty
+ * snapshot that predates the deletion could upload afterward and partially
+ * resurrect data that the user just deleted.
+ */
+export async function deleteCloudStatisticEntries(
+  titles: Iterable<string>,
+  startDate = '',
+  endDate = ''
+): Promise<number> {
+  const api = getConfiguredCloudApi();
+  if (!api) return 0;
+
+  await flushPendingCloudStatistics();
+
+  const titleSet = new Set(titles);
+  if (!titleSet.size) return 0;
+
+  const cloudStats = await api.getStatistics();
+  const matching = cloudStats.filter((entry) => {
+    if (!titleSet.has(entry.title)) return false;
+    if (startDate && entry.dateKey < startDate) return false;
+    if (endDate && entry.dateKey > endDate) return false;
+    return true;
+  });
+
+  let deleted = 0;
+  for (const entry of matching) {
+    try {
+      await api.deleteStatisticEntry(entry.bookId, entry.dateKey);
+      deleted += 1;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Cloud statistics deletion stopped after ${deleted}/${matching.length} entr${deleted === 1 ? 'y' : 'ies'}: ${message}`
+      );
+    }
+  }
+
+  return deleted;
 }
 
 /**

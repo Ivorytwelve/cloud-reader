@@ -14,7 +14,7 @@ import {
   TrackerAutoPause,
   TrackerSkipThresholdAction
 } from '$lib/components/book-reader/book-reading-tracker/book-reading-tracker';
-import { HeatmapDataAggregration } from '$lib/components/statistics/statistics-heatmap/statistics-heatmap';
+import { HeatmapColorMetric, HeatmapDataAggregration } from '$lib/components/statistics/statistics-heatmap/statistics-heatmap';
 import {
   StatisticsRangeTemplate,
   StatisticsTab,
@@ -429,6 +429,12 @@ export const lastReadingDataHeatmapAggregationMode$ =
   writableStringLocalStorageSubject<HeatmapDataAggregration>()(
     'lastReadingDataHeatmapAggregationMode',
     HeatmapDataAggregration.ALL_TIME
+  );
+
+export const lastStatisticsHeatmapColorMetric$ =
+  writableStringLocalStorageSubject<HeatmapColorMetric>()(
+    'lastStatisticsHeatmapColorMetric',
+    HeatmapColorMetric.TIME
   );
 
 export const lastReadingGoalsHeatmapAggregationMode$ =

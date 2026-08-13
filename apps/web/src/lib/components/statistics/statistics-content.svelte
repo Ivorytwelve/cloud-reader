@@ -3,6 +3,7 @@
   import { faSpinner } from '@fortawesome/free-solid-svg-icons';
   import { getDefaultStatistic } from '$lib/components/book-reader/book-reading-tracker/book-reading-tracker';
   import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
+  import { deleteCloudStatisticEntries } from '$lib/cloud/cloud-statistics';
   import MessageDialog from '$lib/components/message-dialog.svelte';
   import { HeatmapType } from '$lib/components/statistics/statistics-heatmap/statistics-heatmap';
   import StatisticsHeatmap from '$lib/components/statistics/statistics-heatmap/statistics-heatmap.svelte';
@@ -382,7 +383,15 @@
       return;
     }
 
-    const error = await database
+    // Cloud statistics are canonical for cloud-library books. Delete those
+    // rows first; otherwise the next Statistics-page sync restores the local
+    // IndexedDB row that was just removed. Local-only titles simply have no
+    // matching cloud entries and continue through the legacy delete path.
+    const cloudError = await deleteCloudStatisticEntries(titlesToDelete, startDate, endDate)
+      .then(() => '')
+      .catch((error) => (error instanceof Error ? error.message : String(error)));
+
+    const error = cloudError || await database
       .deleteStatisticEntries([...titlesToDelete], false, startDate, endDate)
       .catch(({ message }) => message);
 

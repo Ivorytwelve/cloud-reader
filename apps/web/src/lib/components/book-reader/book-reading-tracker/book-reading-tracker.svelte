@@ -22,6 +22,7 @@
     type CloudAudiobookPlaybackDetail
   } from '$lib/cloud/audiobook-tracking';
   import {
+    clearCloudCompletion,
     flushPendingCloudStatistics,
     recordCloudCompletion,
     recordCloudStatisticDelta
@@ -270,6 +271,13 @@
     }
 
     if ($activeCloudBookId$ && completedBookStatistics.completedData) {
+      if (oldCompletedBookStatistics?.dateKey && oldCompletedBookStatistics.dateKey !== completedBookStatistics.dateKey) {
+        clearCloudCompletion({
+          bookId: $activeCloudBookId$,
+          title: bookTitle,
+          dateKey: oldCompletedBookStatistics.dateKey
+        });
+      }
       recordCloudCompletion({
         bookId: $activeCloudBookId$,
         title: bookTitle,

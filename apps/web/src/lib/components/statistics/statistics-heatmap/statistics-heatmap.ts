@@ -10,9 +10,9 @@ export const heatmapDayMargins = 20;
 
 export const heatmapGridGapValue = 1;
 
-export const heatmapMinValueColor = 'c6e48b';
+export const heatmapMinValueColor = '90CAF9';
 
-export const heatmapMaxValueColor = '196127';
+export const heatmapMaxValueColor = '1565C0';
 
 export const daysOfWeek = [
   'Sunday',
@@ -49,6 +49,11 @@ export enum HeatmapType {
 export enum HeatmapDataAggregration {
   ALL_TIME = 'allTime',
   YEAR = 'year'
+}
+
+export enum HeatmapColorMetric {
+  TIME = 'time',
+  CHARACTERS = 'characters'
 }
 
 export enum HeatmapStreakType {
@@ -97,12 +102,13 @@ export interface HeatmapDayData {
 
 export interface StatisticsHeatmapData extends HeatmapData {
   daysRead: string;
-  colorRanges: HeatmapColorRange[];
+  readingTimeColorRanges: HeatmapColorRange[];
+  charactersReadColorRanges: HeatmapColorRange[];
 }
 
 export interface StatisticsHeatmapDayData
   extends HeatmapDayData,
-    Omit<HeatmapGlobalDayData, 'charactersRead' | 'titles'> {}
+    Omit<HeatmapGlobalDayData, 'titles'> {}
 
 export interface ReadingGoalHeatmapGlobalDayData extends HeatmapGlobalDayData {
   readingGoalStartDate: string;

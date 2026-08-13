@@ -18,6 +18,7 @@
     heatmapDayElementSize,
     HeatmapStreakType,
     HeatmapDataAggregration,
+    HeatmapColorMetric,
     type HeatmapGlobalDayData,
     type ReadingGoalsHeatmapData,
     type HeatmapColorRange,
@@ -36,6 +37,7 @@
   import {
     lastStartDayOfWeek$,
     lastStatisticsEndDate$,
+    lastStatisticsHeatmapColorMetric$,
     lastStatisticsStartDate$
   } from '$lib/data/store';
   import { reduceToEmptyString } from '$lib/functions/rxjs/reduce-to-empty-string';
@@ -110,6 +112,14 @@
   $: if (heatmapAggregration) {
     selectedStreak = HeatmapStreakType.NONE;
     selectedStreakDates = new Set();
+  }
+
+  $: if (
+    heatmapType === HeatmapType.STATISTICS &&
+    currentHeatmapData &&
+    $lastStatisticsHeatmapColorMetric$
+  ) {
+    updateHeatmapDayData(undefined);
   }
 
   onMount(() => {
@@ -349,7 +359,8 @@
       globalHeatmapData = {
         streaks,
         daysRead: getDaysReadLabel(getDaysBetween(firstReadingDay, lastReadingDay), daysRead),
-        colorRanges: getColorRanges(minReadingTime, maxReadingTime),
+        readingTimeColorRanges: getColorRanges(minReadingTime, maxReadingTime),
+        charactersReadColorRanges: getStatisticsMetricColorRanges(),
         longestStreaks: getLongestStreaks(streaks),
         currentStreak: getCurrentStreak(streaks, todayKey)
       };
@@ -432,7 +443,11 @@
       const heatmapDataForYear: StatisticsHeatmapData = {
         streaks: streaksInYear,
         daysRead: getDaysReadLabel(getDaysBetween(firstReadingDay, lastReadingDay), daysRead),
-        colorRanges: getColorRanges(minReadingTime, maxReadingTime),
+        readingTimeColorRanges: getColorRanges(minReadingTime, maxReadingTime),
+        charactersReadColorRanges: getStatisticsMetricColorRanges(
+          firstDayOfYearDateString,
+          lastDayOfYearDateString
+        ),
         longestStreaks: getLongestStreaks(streaksInYear),
         currentStreak: getCurrentStreak(streaksInYear, todayKey)
       };
@@ -763,40 +778,50 @@
     return currentStreak;
   }
 
-  function getColorRanges(minimumValue: number, maximumValue: number, forcedMax?: number) {
-    const colorRangeslist: HeatmapColorRange[] = [{ limit: 0, color: '' }];
+  function getStatisticsMetricColorRanges(startDate = '', endDate = '') {
+    let minimumValue = 0;
+    let maximumValue = 0;
 
-    if (maximumValue) {
-      const steps = Math.ceil(maximumValue / 4);
-      const colorMax = forcedMax || maximumValue - steps + minimumValue;
-      const willExecute = minimumValue < maximumValue;
-
-      if (willExecute) {
-        for (let limit = minimumValue; limit < maximumValue; limit += steps) {
-          if (limit) {
-            colorRangeslist.push({
-              limit,
-              color: colorByRating(
-                heatmapMinValueColor,
-                heatmapMaxValueColor,
-                minimumValue,
-                colorMax,
-                limit
-              )
-            });
-          }
-        }
-      } else {
-        colorRangeslist.push({
-          limit: minimumValue,
-          color: `#${heatmapMaxValueColor}`
-        });
-      }
+    for (const [dateKey, dayData] of globalHeatmapDayData.entries()) {
+      if (startDate && dateKey < startDate) continue;
+      if (endDate && dateKey > endDate) continue;
+      const value = (dayData as HeatmapGlobalDayData).charactersRead;
+      if (!value) continue;
+      maximumValue = Math.max(maximumValue, value);
+      minimumValue = minimumValue ? Math.min(minimumValue, value) : value;
     }
 
-    colorRangeslist.reverse();
+    return getColorRanges(minimumValue, maximumValue);
+  }
 
-    return colorRangeslist;
+  function getColorRanges(minimumValue: number, maximumValue: number, forcedMax?: number) {
+    const colorRangesList: HeatmapColorRange[] = [{ limit: 0, color: '' }];
+    if (maximumValue <= 0) return colorRangesList;
+
+    const maxForColor = forcedMax || maximumValue;
+    if (minimumValue >= maximumValue) {
+      colorRangesList.push({ limit: minimumValue, color: `#${heatmapMaxValueColor}` });
+      return colorRangesList.reverse();
+    }
+
+    const levels = 5;
+    for (let index = 0; index < levels; index += 1) {
+      const ratio = index / (levels - 1);
+      const limit = minimumValue + (maximumValue - minimumValue) * ratio;
+      colorRangesList.push({
+        limit,
+        color: colorByRating(
+          heatmapMinValueColor,
+          heatmapMaxValueColor,
+          minimumValue,
+          maxForColor,
+          limit
+        )
+      });
+    }
+
+    colorRangesList.reverse();
+    return colorRangesList;
   }
 
   function colorByRating(
@@ -806,7 +831,8 @@
     maxValue: number,
     value: number
   ) {
-    const colorRatio = limitToRange(0, 1, value / (maxValue - minValue));
+    const range = Math.max(1, maxValue - minValue);
+    const colorRatio = limitToRange(0, 1, (value - minValue) / range);
     const r = Math.ceil(
       parseInt(colorStart.substring(0, 2), 16) * (1 - colorRatio) +
         parseInt(colorEnd.substring(0, 2), 16) * colorRatio
@@ -872,7 +898,8 @@
         heatmapColumn,
         color: '',
         dayDetails: [],
-        readingTime: 0
+        readingTime: 0,
+        charactersRead: 0
       });
 
       heatmapRow += 1;
@@ -935,7 +962,8 @@
         heatmapColumn,
         color: '',
         dayDetails: [],
-        readingTime: 0
+        readingTime: 0,
+        charactersRead: 0
       });
 
       dayNumber += 1;
@@ -971,7 +999,8 @@
             `${dayData.charactersRead} characters`,
             pluralize(dayData.titles.size, 'title')
           ],
-          readingTime: dayData.readingTime
+          readingTime: dayData.readingTime,
+          charactersRead: dayData.charactersRead
         }
       : {
           dateString,
@@ -980,16 +1009,23 @@
           heatmapColumn,
           color: '',
           dayDetails: [dateString, `0 min`, `0 characters`, `0 titles`],
-          readingTime: 0
+          readingTime: 0,
+          charactersRead: 0
         };
 
+    const colorMetricValue =
+      $lastStatisticsHeatmapColorMetric$ === HeatmapColorMetric.CHARACTERS
+        ? statisticsHeatmapDay.charactersRead
+        : statisticsHeatmapDay.readingTime;
     const colorRangesToUse = checkIsStatisticsHeatmapData(currentHeatmapData)
-      ? currentHeatmapData.colorRanges
+      ? $lastStatisticsHeatmapColorMetric$ === HeatmapColorMetric.CHARACTERS
+        ? currentHeatmapData.charactersReadColorRanges
+        : currentHeatmapData.readingTimeColorRanges
       : colorRanges;
 
-    if (statisticsHeatmapDay.isCurrentYear) {
+    if (statisticsHeatmapDay.isCurrentYear && colorMetricValue > 0) {
       statisticsHeatmapDay.color =
-        colorRangesToUse.find((r) => r.limit <= statisticsHeatmapDay.readingTime)?.color || '';
+        colorRangesToUse.find((r) => r.limit <= colorMetricValue)?.color || '';
     }
 
     return statisticsHeatmapDay;
@@ -1011,7 +1047,8 @@
       heatmapColumn,
       color: '',
       dayDetails: [],
-      readingTime: 0
+      readingTime: 0,
+      charactersRead: 0
     };
     let initialReadingGoalUsed = readingGoalUsed;
     let currentReadingGoalWindow = existingReadingGoalWindow;
@@ -1074,8 +1111,26 @@
 </script>
 
 {$resizeHandler$ ?? ''}
-<div class="mb-4 flex justify-center">
-  {heatmapLabel}
+<div class="mb-4 flex flex-wrap items-center justify-center gap-y-2">
+  <span>{heatmapLabel}</span>
+  {#if heatmapType === HeatmapType.STATISTICS}
+    <div class="ml-3 flex overflow-hidden rounded-md border border-[#90CAF9] text-xs" title="Color heatmap by">
+      <button
+        class="px-2 py-1"
+        class:metricActive={$lastStatisticsHeatmapColorMetric$ === HeatmapColorMetric.TIME}
+        on:click={() => ($lastStatisticsHeatmapColorMetric$ = HeatmapColorMetric.TIME)}
+      >
+        Time
+      </button>
+      <button
+        class="border-l border-[#90CAF9] px-2 py-1"
+        class:metricActive={$lastStatisticsHeatmapColorMetric$ === HeatmapColorMetric.CHARACTERS}
+        on:click={() => ($lastStatisticsHeatmapColorMetric$ = HeatmapColorMetric.CHARACTERS)}
+      >
+        Characters
+      </button>
+    </div>
+  {/if}
   <button
     title="Return to current Year"
     class="mx-4 hover:text-red-500"
@@ -1158,10 +1213,8 @@
       <div
         tabindex="0"
         role="cell"
-        class="justify-self-center fadeIn"
+        class="justify-self-center fadeIn rounded-[3px]"
         class:cursor-pointer={heatmapDay.isCurrentYear}
-        class:bg-slate-300={heatmapDay.isCurrentYear}
-        class:bg-slate-200={!heatmapDay.isCurrentYear}
         class:border-amber-500={isSelected}
         class:border-red-500={isToday}
         class:highlight={selectedStreakDates.has(heatmapDay.dateString)}
@@ -1170,7 +1223,7 @@
         style:width={`${dayElementSize}px`}
         style:grid-row={`${heatmapDay.heatmapRow}/${heatmapDay.heatmapRow}`}
         style:grid-column={`${heatmapDay.heatmapColumn}/${heatmapDay.heatmapColumn}`}
-        style:background-color={heatmapDay.color || null}
+        style:background-color={heatmapDay.color || (heatmapDay.isCurrentYear ? 'var(--ttu-blue-100, #E3F2FD)' : 'var(--ttu-surface-hover, #f1f5f9)')}
         style:border-width={`${isSelected || isToday ? '3' : '1'}px`}
         title={`${heatmapDay.isCurrentYear ? `${heatmapDay.dayDetails.join('\n')}` : ''}`}
         data-date={heatmapDay.dateString}
@@ -1388,6 +1441,11 @@
 {/if}
 
 <style>
+  .metricActive {
+    background: #2196f3;
+    color: white;
+  }
+
   .highlight {
     box-shadow: 0px 1px 5px 1px black;
   }

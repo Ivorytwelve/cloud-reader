@@ -989,58 +989,19 @@
     <div class="sm:col-span-2 lg:col-span-3 rounded-xl border border-[#90CAF9]/70 bg-[#E3F2FD]/55 px-3 py-2 text-sm">
       <div class="font-medium">Cloud audiobook statistics</div>
       <div class="mt-1 text-xs opacity-65">
-        The cloud is canonical; IndexedDB is only a local display/cache. For cloud audiobooks the settings that directly affect tracking are Enable Statistics, Start Day Hours, Include Short Audiobook Pauses, Short Pause Limit, and the Forward/Backward Skip Thresholds. The remaining tracker controls are inherited from Ttsu and mainly apply to ebook-only/classic tracking.
+        Cloud statistics are tracked automatically from actual audiobook playback. These controls only affect that cloud tracking path and book-completion statistics.
       </div>
     </div>
 
     <SettingsItemGroup
-      title="Keep Local Data on Deletion"
-      tooltip={'Determines if local statistics will be deleted or not when removing a local book copy'}
+      title="Enable Statistics"
+      tooltip="Master switch for automatic cloud audiobook statistics. When disabled, listening time and character progress are not recorded."
     >
-      <div class="flex items-center">
-        <ButtonToggleGroup
-          options={optionsForToggle}
-          bind:selectedOptionId={keepLocalStatisticsOnDeletion}
-        />
-        <div
-          tabindex="0"
-          role="button"
-          class="ml-4 hover:underline"
-          on:click={() => {
-            showSpinner = true;
-            database
-              .clearZombieStatistics()
-              .catch(({ message }) =>
-                dialogManager.dialogs$.next([
-                  {
-                    component: MessageDialog,
-                    props: {
-                      title: 'Error',
-                      message: `Error clearing Zombie Statistics: ${message}`
-                    }
-                  }
-                ])
-              )
-              .finally(() => (showSpinner = false));
-          }}
-          on:keyup={() => {}}
-        >
-          Clear Zombie Statistics
-        </div>
-      </div>
-    </SettingsItemGroup>
-    <SettingsItemGroup
-      title="Overwrite Book Completion"
-      tooltip={`Determines if only the first Book Completion will be tracked or if it always updates to the latest one`}
-    >
-      <ButtonToggleGroup
-        options={optionsForToggle}
-        bind:selectedOptionId={overwriteBookCompletion}
-      />
+      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={statisticsEnabled} />
     </SettingsItemGroup>
     <SettingsItemGroup
       title={`Start Day Hours: ${startOfDayHours}`}
-      tooltip={'Determines at which time a new day starts.\nData before this point will be counted towards the previous day'}
+      tooltip={'Determines when a statistics day starts. Data before this time is counted toward the previous day.'}
     >
       <input
         type="range"
@@ -1051,41 +1012,17 @@
         bind:value={startDayHoursForTracker}
       />
     </SettingsItemGroup>
-    <SettingsItemGroup
-      title="Statistics Merge"
-      tooltip={`Determines if statistics will be merged entry by entry or replaced completely on a sync`}
-    >
-      <ButtonToggleGroup
-        options={optionsForMergeMode}
-        bind:selectedOptionId={statisticsMergeMode}
-      />
-    </SettingsItemGroup>
-    <SettingsItemGroup
-      title="Reading Goals Merge"
-      tooltip={`Determines if reading goals will be merged entry by entry or replaced completely on a sync`}
-    >
-      <ButtonToggleGroup
-        options={optionsForMergeMode}
-        bind:selectedOptionId={readingGoalsMergeMode}
-      />
-    </SettingsItemGroup>
-    <SettingsItemGroup
-      title="Enable Statistics"
-      tooltip="Statistics are enabled by default. Cloud audiobooks are tracked automatically from actual playback; ebook-only books keep Ttsu's classic tracker behavior."
-    >
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={statisticsEnabled} />
-    </SettingsItemGroup>
     {#if statisticsEnabled}
       <SettingsItemGroup
         title="Include Short Audiobook Pauses"
-        tooltip="Normally paused time is not counted. Enable this to include short pauses such as dictionary lookups, but only when the pause ends within the configured limit."
+        tooltip="Normally paused time is not counted. Enable this to include short pauses such as dictionary lookups when the pause ends within the configured limit."
       >
         <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={audiobookCountShortPauses} />
       </SettingsItemGroup>
       {#if audiobookCountShortPauses}
         <SettingsItemGroup
           title="Short Pause Limit (sec)"
-          tooltip="A completed pause at or below this duration is added to study time. Longer pauses count as zero paused time."
+          tooltip="A completed pause at or below this duration is added to cloud study time. Longer pauses add no paused time."
         >
           <input
             type="number"
@@ -1103,70 +1040,9 @@
           />
         </SettingsItemGroup>
       {/if}
-      <SettingsItemGroup title="Tracker Auto Pause" tooltip={trackerAutoPauseTooltip}>
-        <ButtonToggleGroup
-          options={optionsForTrackerAutoPause}
-          bind:selectedOptionId={trackerAutoPause}
-        />
-      </SettingsItemGroup>
-      <SettingsItemGroup title="Open Tracker on Completion">
-        <ButtonToggleGroup
-          options={optionsForToggle}
-          bind:selectedOptionId={openTrackerOnCompletion}
-        />
-      </SettingsItemGroup>
-      <SettingsItemGroup
-        title="Update on Completion"
-        tooltip={`Determines if the missing amount of characters between the current position and the book total will be added to the statistics or not`}
-      >
-        <ButtonToggleGroup
-          options={optionsForToggle}
-          bind:selectedOptionId={addCharactersOnCompletion}
-        />
-      </SettingsItemGroup>
-      <SettingsItemGroup
-        title="Autostart tracker (sec)"
-        tooltip={'Time in seconds without a change to the character count after which the tracker will initially auto start (0 = disabled, higher value recommended to avoid racing conditions)'}
-      >
-        <input
-          type="number"
-          class={inputClasses}
-          step="1"
-          min="0"
-          bind:value={trackerAutoStartTime}
-          on:blur={() => {
-            const newValue = Number.parseFloat(`${trackerAutoStartTime ?? 0}`);
-
-            if (isNaN(newValue) || newValue < 1) {
-              trackerAutoStartTime = 0;
-            }
-          }}
-        />
-      </SettingsItemGroup>
-      <SettingsItemGroup
-        title="Idle Time (min)"
-        tooltip={'Time in minutes after which the tracker will auto pause without page interaction (0 = disabled, max 12h)'}
-      >
-        <input
-          type="number"
-          class={inputClasses}
-          step="0.5"
-          min="0"
-          bind:value={trackerIdleTimeInMin}
-          on:blur={() => {
-            if (!trackerIdleTimeInMin || trackerIdleTimeInMin < 0) {
-              trackerIdleTime = 0;
-            } else if (trackerIdleTimeInMin > 43200) {
-              trackerIdleTime = 900;
-            } else {
-              trackerIdleTime = Math.floor(trackerIdleTimeInMin * 60);
-            }
-          }}
-        />
-      </SettingsItemGroup>
       <SettingsItemGroup
         title="Forward Skip Threshold"
-        tooltip={'Amount of positive characters passed between a tick after which a threshold action is triggered (0 = disabled)'}
+        tooltip="If a single forward text jump exceeds this many characters, that jump is ignored for cloud character statistics. Set to 0 to disable the safeguard."
       >
         <input
           type="number"
@@ -1185,12 +1061,13 @@
       </SettingsItemGroup>
       <SettingsItemGroup
         title="Backward Skip Threshold"
-        tooltip={'Amount of negative characters passed between a tick after which a threshold action is triggered (0 = disabled)'}
+        tooltip="If a single backward text jump exceeds this many characters, that jump is ignored for cloud character statistics. Set to 0 to disable the safeguard."
       >
         <input
           type="number"
           class={inputClasses}
           step="1"
+          min="0"
           bind:value={trackerBackwardSkipThreshold}
           on:blur={() => {
             if (trackerBackwardSkipThreshold < 0) {
@@ -1203,39 +1080,24 @@
           }}
         />
       </SettingsItemGroup>
-      {#if trackerForwardSkipThreshold || trackerBackwardSkipThreshold}
-        <SettingsItemGroup
-          title="Threshold Action"
-          tooltip={`Determines what action will be executed in case a skip threshold was triggered`}
-        >
-          <ButtonToggleGroup
-            options={optionsForTrackerSkipThresholdAction}
-            bind:selectedOptionId={trackerSkipThresholdAction}
-          />
-        </SettingsItemGroup>
-      {/if}
-      {#if trackerAutoPause !== TrackerAutoPause.OFF}
-        <SettingsItemGroup
-          title="Dictionary Detection"
-          tooltip={`If enabled auto pause is skipped if open yomitan/jpdb-browser-reader was detected - yomitan requires disabled 'Secure Container' settings`}
-        >
-          <ButtonToggleGroup
-            options={optionsForToggle}
-            bind:selectedOptionId={trackerPopupDetection}
-          />
-        </SettingsItemGroup>
-      {/if}
-      {#if trackerIdleTime > 0}
-        <SettingsItemGroup
-          title="Rollback Statistics on Idle"
-          tooltip={`If enabled attempts to rollback statistics by subtracting the idled time value back from the session`}
-        >
-          <ButtonToggleGroup
-            options={optionsForToggle}
-            bind:selectedOptionId={adjustStatisticsAfterIdleTime}
-          />
-        </SettingsItemGroup>
-      {/if}
+      <SettingsItemGroup
+        title="Update Completion Date"
+        tooltip="When you complete the same cloud book again on a later day, move its completion marker to the latest completion. When disabled, the first completion is kept."
+      >
+        <ButtonToggleGroup
+          options={optionsForToggle}
+          bind:selectedOptionId={overwriteBookCompletion}
+        />
+      </SettingsItemGroup>
+      <SettingsItemGroup
+        title="Add Remaining Characters on Completion"
+        tooltip="When completing a cloud book before the tracked text position reaches the end, add the remaining characters to that day's cloud statistics."
+      >
+        <ButtonToggleGroup
+          options={optionsForToggle}
+          bind:selectedOptionId={addCharactersOnCompletion}
+        />
+      </SettingsItemGroup>
       <SettingsReadingGoals
         storageSources={$storageSources$}
         on:spinner={({ detail }) => (showSpinner = detail)}

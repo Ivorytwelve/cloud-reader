@@ -5,8 +5,7 @@
     faCopy,
     faFilter,
     faMap,
-    faPenToSquare,
-    faSliders
+    faPenToSquare
   } from '@fortawesome/free-solid-svg-icons';
   import { mergeEntries } from '$lib/components/merged-header-icon/merged-entries';
   import MergedHeaderIcon from '$lib/components/merged-header-icon/merged-header-icon.svelte';
@@ -14,8 +13,6 @@
   import {
     StatisticsTab,
     copyStatisticsData$,
-    statisticsTitleFilterEnabled$,
-    statisticsTitleFilterIsOpen$,
     type StatisticsDataSource
   } from '$lib/components/statistics/statistics-types';
   import { baseHeaderClasses, baseIconClasses, pxScreen } from '$lib/css-classes';
@@ -93,16 +90,9 @@
       <div
         tabindex="0"
         role="button"
-        title="Open Title Filter Menu"
+        title="Open Statistics Filters"
         class={baseIconClasses}
-        style:cursor={$statisticsTitleFilterEnabled$ ? 'pointer' : 'not-allowed'}
-        on:click={() => {
-          if (!$statisticsTitleFilterEnabled$) {
-            return;
-          }
-
-          $statisticsTitleFilterIsOpen$ = true;
-        }}
+        on:click={() => (showStatisticsSettings = true)}
         on:keyup={dummyFn}
       >
         <Fa icon={faFilter} />
@@ -116,16 +106,6 @@
         on:keyup={dummyFn}
       >
         <Fa icon={faPenToSquare} />
-      </div>
-      <div
-        tabindex="0"
-        role="button"
-        title="Open Statistics Settings"
-        class={baseIconClasses}
-        on:click={() => (showStatisticsSettings = true)}
-        on:keyup={dummyFn}
-      >
-        <Fa icon={faSliders} />
       </div>
       {#if currentBookId}
         <svg

@@ -24,7 +24,7 @@
   import { browser } from '$app/environment';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
-  import { faCloudBolt, faPause, faPlay, faSpinner } from '@fortawesome/free-solid-svg-icons';
+  import { faCloudBolt, faSpinner } from '@fortawesome/free-solid-svg-icons';
   import BookReader from '$lib/components/book-reader/book-reader.svelte';
   import type {
     AutoScroller,
@@ -157,7 +157,6 @@
   import { reduceToEmptyString } from '$lib/functions/rxjs/reduce-to-empty-string';
   import { takeWhenBrowser } from '$lib/functions/rxjs/take-when-browser';
   import { tapDom } from '$lib/functions/rxjs/tap-dom';
-  import { multiClickHandler } from '$lib/functions/multi-click-handler';
   import {
     executeReplicate$,
     type ReplicationContext
@@ -222,7 +221,6 @@
   let hasBookmarkData = false;
   let blockDataUpdates = false;
   let trackerElm: BookReadingTracker;
-  let showTrackerIcon = false;
   let wasTrackerPaused = true;
   let frozenPosition = -1;
   let skipFirstFreezeChange = false;
@@ -645,16 +643,6 @@
     }
 
     return event;
-  }
-
-  function trackerSingleClickHandler() {
-    if (!statisticsEnabled$) {
-      return;
-    }
-
-    wasTrackerPaused = $isTrackerPaused$;
-    isTrackerPaused$.next(true);
-    isTrackerMenuOpen$.next(true);
   }
 
   function trackerDblClickHandler() {
@@ -1771,7 +1759,6 @@
           scheduleReplication(StorageDataType.STATISTICS);
         }
       }}
-      on:trackerAvailable={() => (showTrackerIcon = true)}
       on:trackerMenuClosed={() => {
         if (!wasTrackerPaused) {
           isTrackerPaused$.next(false);
@@ -1919,18 +1906,6 @@
 >
   <div class="flex h-full">
     <NativeWhispersync currentBookId={currentWhispersyncBookId} />
-    {#if showTrackerIcon}
-      <div
-        role="button"
-        title="Click to open Tracker Menu or Double Click to toggle Tracker"
-        class="flex h-full w-8 items-center justify-center text-sm sm:text-lg"
-        class:text-red-500={$isTrackerPaused$}
-        class:animate-pulse={frozenPosition > -1}
-        use:multiClickHandler={[trackerSingleClickHandler, trackerDblClickHandler]}
-      >
-        <Fa icon={$isTrackerPaused$ ? faPlay : faPause} />
-      </div>
-    {/if}
     {#if dataToReplicate.length}
       <div
         tabindex="0"

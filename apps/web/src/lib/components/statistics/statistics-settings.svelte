@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     faCircleQuestion,
+    faFilter,
     faLeftLong,
     faRightLong,
     faXmark
@@ -9,21 +10,17 @@
   import {
     type StatisticsDateChange,
     statisticsRangeTemplates,
-    readingTimeDataSources,
-    charactersDataSources,
-    readingSpeedDataSources,
     statisticsDataAggregrationModes,
     exportStatisticsData$,
     statisticsActionInProgress$,
+    statisticsTitleFilterEnabled$,
+    statisticsTitleFilterIsOpen$,
     setStatisticsDatesToAllTime$
   } from '$lib/components/statistics/statistics-types';
   import { daysOfWeek } from '$lib/components/statistics/statistics-heatmap/statistics-heatmap';
   import { dialogManager } from '$lib/data/dialog-manager';
   import {
-    lastCharactersDataSource$,
     lastPrimaryReadingDataAggregationMode$,
-    lastReadingSpeedDataSource$,
-    lastReadingTimeDataSource$,
     lastStartDayOfWeek$,
     lastStatisticsEndDate$,
     lastStatisticsRangeTemplate$,
@@ -67,7 +64,7 @@
     <Fa icon={faXmark} />
   </button>
   <div class="flex flex-1 items-center justify-end gap-3">
-    <span class="hidden text-xs opacity-60 sm:inline">Use the pencil icon in the Statistics bar to edit/delete cloud data.</span>
+    <span class="hidden text-xs opacity-60 sm:inline">Filters, date range and summary grouping</span>
     <button class="hover:text-[#90CAF9]" on:click={() => exportStatisticsData(false)}>
       Export Selection
     </button>
@@ -77,6 +74,18 @@
   </div>
 </div>
 <div class="flex-1 p-4 overflow-auto">
+  <button
+    class="mb-5 flex w-full items-center justify-between rounded-lg border border-white/25 px-3 py-2 text-left hover:border-[#90CAF9] hover:text-[#90CAF9] disabled:cursor-not-allowed disabled:opacity-40"
+    disabled={!$statisticsTitleFilterEnabled$}
+    on:click={() => {
+      if (!$statisticsTitleFilterEnabled$) return;
+      dispatch('close');
+      $statisticsTitleFilterIsOpen$ = true;
+    }}
+  >
+    <span>Book titles</span>
+    <Fa icon={faFilter} />
+  </button>
   <div class="flex flex-col mb-6">
     <label for="datesTemplate">Template</label>
     <select id="datesTemplate" class="text-black" bind:value={$lastStatisticsRangeTemplate$}>
@@ -163,63 +172,13 @@
   >
     Set to All Time for selected Book Titles
   </button>
-  <div class="flex flex-wrap justify-between mt-4">
-    <div class="flex flex-col my-2 w-full sm:w-[initial]">
-      <Popover
-        contentText={'Reading Time Attribute which should be used for the Summary Tab'}
-        contentStyles="padding: 0.5rem;"
-      >
-        <Fa icon={faCircleQuestion} slot="icon" class="mx-2" />
-        <label for="timeDataSource">Time Data Source</label>
-      </Popover>
-      <select id="timeDataSource" class="text-black" bind:value={$lastReadingTimeDataSource$}>
-        {#each readingTimeDataSources as readingTimeDataSource (readingTimeDataSource.key)}
-          <option value={readingTimeDataSource.key}>
-            {readingTimeDataSource.label}
-          </option>
-        {/each}
-      </select>
-    </div>
-    <div class="flex flex-col my-2 w-full sm:w-[initial]">
-      <Popover
-        contentText={'Characters Read Attribute which should be used for the Summary Tab'}
-        contentStyles="padding: 0.5rem; max-width: 20rem;"
-      >
-        <Fa icon={faCircleQuestion} slot="icon" class="mx-2" />
-        <label for="charactersSource">Characters Data Source</label>
-      </Popover>
-      <select id="charactersSource" class="text-black" bind:value={$lastCharactersDataSource$}>
-        {#each charactersDataSources as charactersDataSource (charactersDataSource.key)}
-          <option value={charactersDataSource.key}>
-            {charactersDataSource.label}
-          </option>
-        {/each}
-      </select>
-    </div>
-    <div class="flex flex-col my-2 w-full sm:w-[initial]">
-      <Popover
-        contentText={'Reading Speed Attribute which should be used for the Summary Tab'}
-        contentStyles="padding: 0.5rem;"
-      >
-        <Fa icon={faCircleQuestion} slot="icon" class="mx-2" />
-        <label for="speedSource">Speed Data Source</label>
-      </Popover>
-      <select id="speedSource" class="text-black" bind:value={$lastReadingSpeedDataSource$}>
-        {#each readingSpeedDataSources as readingSpeedDataSource (readingSpeedDataSource.key)}
-          <option value={readingSpeedDataSource.key}>
-            {readingSpeedDataSource.label}
-          </option>
-        {/each}
-      </select>
-    </div>
-  </div>
   <div class="flex flex-col mt-4">
     <Popover
-      contentText={'Determines on which primary Attribute the Data will be grouped for the Summary Tab'}
+      contentText={'Groups the Summary tab by individual entries, date, or book title.'}
       contentStyles="padding: 0.5rem;"
     >
       <Fa icon={faCircleQuestion} slot="icon" class="mx-2" />
-      <label for="primaryAggregration">Primary Aggregration</label>
+      <label for="primaryAggregration">Summary Grouping</label>
     </Popover>
     <select
       id="primaryAggregration"
