@@ -637,11 +637,75 @@
     return '';
   }
 
+  type ShelfWheelState = {
+    target: number;
+    frame: number | null;
+  };
+
+  const shelfWheelStates = new WeakMap<HTMLDivElement, ShelfWheelState>();
+
+  function shelfWheelDeltaPixels(event: WheelEvent, el: HTMLDivElement): number {
+    let delta = event.deltaY;
+    if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) delta *= 18;
+    else if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) delta *= Math.max(160, el.clientWidth * 0.85);
+
+    // Mouse wheels can report very large per-notch values. Capping each event keeps
+    // the shelf controllable while still allowing repeated wheel events to build
+    // momentum naturally.
+    return Math.max(-180, Math.min(180, delta));
+  }
+
+  function animateShelfWheel(el: HTMLDivElement, state: ShelfWheelState) {
+    const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
+    state.target = Math.max(0, Math.min(maxScroll, state.target));
+    const remaining = state.target - el.scrollLeft;
+
+    if (Math.abs(remaining) < 0.5) {
+      el.scrollLeft = state.target;
+      state.frame = null;
+      return;
+    }
+
+    // Ease toward the accumulated target instead of mapping every wheel event
+    // directly to scrollLeft. This removes the jerky stop/start feeling of a
+    // conventional mouse wheel without changing native touch scrolling.
+    el.scrollLeft += remaining * 0.24;
+    state.frame = requestAnimationFrame(() => animateShelfWheel(el, state));
+  }
+
   function onShelfWheel(event: WheelEvent, el: HTMLDivElement | undefined) {
-    if (!el || Math.abs(event.deltaY) <= Math.abs(event.deltaX) || event.ctrlKey) return;
-    if (el.scrollWidth <= el.clientWidth + 2) return;
+    if (!el || event.ctrlKey) return;
+
+    // Keep genuine horizontal trackpad gestures native. Only translate a primarily
+    // vertical wheel gesture into shelf movement.
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+
+    const maxScroll = el.scrollWidth - el.clientWidth;
+    if (maxScroll <= 2) return;
+
+    const delta = shelfWheelDeltaPixels(event, el);
+    if (!delta) return;
+
+    // At the ends, give the wheel back to the page instead of trapping vertical
+    // scrolling when there is nowhere left for this shelf to move.
+    if ((delta < 0 && el.scrollLeft <= 1) || (delta > 0 && el.scrollLeft >= maxScroll - 1)) return;
+
     event.preventDefault();
-    el.scrollBy({ left: event.deltaY, behavior: 'auto' });
+
+    let state = shelfWheelStates.get(el);
+    if (!state) {
+      state = { target: el.scrollLeft, frame: null };
+      shelfWheelStates.set(el, state);
+    }
+
+    // If native input or another action moved the shelf while no animation was
+    // running, start from its real position rather than an old target.
+    if (state.frame === null) state.target = el.scrollLeft;
+    state.target = Math.max(0, Math.min(maxScroll, state.target + delta));
+
+    if (state.frame === null) {
+      state.frame = requestAnimationFrame(() => animateShelfWheel(el, state!));
+    }
   }
 
   function resetUploadForm() {
@@ -1029,7 +1093,7 @@
     scrollbar-width: none;
     -ms-overflow-style: none;
     overscroll-behavior-x: contain;
-    scroll-behavior: smooth;
+    scroll-behavior: auto;
     touch-action: pan-x;
   }
 
