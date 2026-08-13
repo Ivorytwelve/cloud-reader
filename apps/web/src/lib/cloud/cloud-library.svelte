@@ -853,7 +853,6 @@
                 </div>
                 <div class="cloud-book-info p-2.5">
                   <div class="line-clamp-2 min-h-[2.5rem] text-sm font-medium">{book.title}</div>
-                  {#if book.author}<div class="mt-0.5 line-clamp-1 text-xs opacity-50">{book.author}</div>{/if}
                   <div class="cloud-book-progress mt-1.5 whitespace-nowrap text-[0.68rem] opacity-60">{progressText(book)}</div>
                   <div class="mt-1.5 h-1 overflow-hidden rounded-full bg-[#90CAF9]/45">
                     <div class="h-full rounded-full bg-[#2196F3]" style:width={`${progressPercent(book) * 100}%`} />
@@ -931,7 +930,6 @@
                 </div>
                 <div class="cloud-book-info p-2.5">
                   <div class="line-clamp-2 min-h-[2.5rem] text-sm font-medium">{book.title}</div>
-                  {#if book.author}<div class="mt-0.5 line-clamp-1 text-xs opacity-50">{book.author}</div>{/if}
                   <div class="mt-1.5 text-xs opacity-60">{formatFinishedDate(book.finishedAt)}</div>
                 </div>
               </button>
