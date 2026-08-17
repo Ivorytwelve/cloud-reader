@@ -100,6 +100,9 @@
   let coverLookupTimer: number | undefined;
   let mirrorFrame: number | undefined;
   let sentenceFitFrame: number | undefined;
+  let playerFitFrame: number | undefined;
+  let playerStageElement: HTMLElement | undefined;
+  let playerStackElement: HTMLElement | undefined;
   let localCoverInput: string | Blob | undefined;
   let localCoverUrl = '';
   let bookBlobsInput: Record<string, Blob> | undefined;
@@ -386,6 +389,7 @@
     updateEpubChapterTitleFromActiveLine();
   }
   $: if (enabled && resolvedSettings.showSentence && sentenceMirrorBox) scheduleSentenceFit();
+  $: if (enabled && playerStageElement && playerStackElement) schedulePlayerFit();
   $: if (
     $currentAudioFile$ !== embeddedAudioCoverFile ||
     Boolean($currentCoverUrl$) !== embeddedCoverStoreHadCover
@@ -456,6 +460,7 @@
       if (coverLookupTimer) window.clearTimeout(coverLookupTimer);
       if (mirrorFrame) window.cancelAnimationFrame(mirrorFrame);
       if (sentenceFitFrame) window.cancelAnimationFrame(sentenceFitFrame);
+      if (playerFitFrame) window.cancelAnimationFrame(playerFitFrame);
       contentObserver?.disconnect();
       if (localCoverUrl.startsWith('blob:')) URL.revokeObjectURL(localCoverUrl);
       revokeBookBlobCover();
@@ -836,9 +841,15 @@
         `${(baseFontSize * scale).toFixed(2)}px`
       );
 
-    if (fits()) return;
+    if (fits()) {
+      schedulePlayerFit();
+      return;
+    }
     applyScale(minimumScale);
-    if (!fits()) return;
+    if (!fits()) {
+      schedulePlayerFit();
+      return;
+    }
 
     // Find the largest size that fits. A short binary search avoids doing a long
     // chain of synchronous layouts for every subtitle change.
@@ -851,6 +862,48 @@
       else high = candidate;
     }
     applyScale(low);
+    schedulePlayerFit();
+  }
+
+  function schedulePlayerFit() {
+    if (!browser || !enabled || !playerStageElement || !playerStackElement || playerFitFrame) return;
+    playerFitFrame = window.requestAnimationFrame(() => {
+      playerFitFrame = undefined;
+      fitPlayerVertically();
+    });
+  }
+
+  function fitPlayerVertically() {
+    const stage = playerStageElement;
+    const stack = playerStackElement;
+    if (!stage || !stack) return;
+
+    // The desktop layout has enough room and should keep its original rhythm.
+    if (window.matchMedia('(min-width: 640px)').matches) {
+      for (const property of ['--listening-artwork-fit-trim', '--listening-heading-fit-trim', '--listening-progress-fit-trim', '--listening-controls-fit-trim']) stack.style.removeProperty(property);
+      return;
+    }
+
+    // Measure from the uncompressed layout every time so rotating the phone or
+    // hiding the current sentence can restore the normal spacing immediately.
+    for (const property of ['--listening-artwork-fit-trim', '--listening-heading-fit-trim', '--listening-progress-fit-trim', '--listening-controls-fit-trim']) stack.style.setProperty(property, '0px');
+    const playbackControls = stack.querySelector<HTMLElement>('.listening-playback-controls');
+    if (!playbackControls) return;
+
+    const stageRect = stage.getBoundingClientRect();
+    const controlsRect = playbackControls.getBoundingClientRect();
+    const comfortableBottomGap = 14;
+    const overflow = controlsRect.bottom - (stageRect.bottom - comfortableBottomGap);
+    if (overflow <= 0) return;
+
+    // Remove only as much of the deliberately-added vertical spacing as needed.
+    // The artwork remains centered in its flex zone, so the free space above and
+    // below it contracts together instead of the whole player jumping upward.
+    const trim = Math.ceil(overflow);
+    stack.style.setProperty('--listening-artwork-fit-trim', `${Math.ceil(trim * 0.35)}px`);
+    stack.style.setProperty('--listening-heading-fit-trim', `${Math.ceil(trim * 0.65)}px`);
+    stack.style.setProperty('--listening-progress-fit-trim', `${Math.ceil(trim * 0.82)}px`);
+    stack.style.setProperty('--listening-controls-fit-trim', `${trim}px`);
   }
 
   function refreshSentenceMirror() {
@@ -1811,6 +1864,7 @@
   function onListeningWindowResize() {
     positionChapterPopover();
     scheduleSentenceFit();
+    schedulePlayerFit();
   }
 
   function onKeydown(event: KeyboardEvent) {
@@ -2034,8 +2088,14 @@
         </div>
       {/if}
 
-      <main class="listening-player-stage flex min-h-0 flex-1 items-center justify-center py-3 sm:py-5">
-        <div class="listening-player-stack flex w-full max-w-3xl flex-col items-center">
+      <main
+        class="listening-player-stage flex min-h-0 flex-1 items-center justify-center py-3 sm:py-5"
+        bind:this={playerStageElement}
+      >
+        <div
+          class="listening-player-stack flex w-full max-w-3xl flex-col items-center"
+          bind:this={playerStackElement}
+        >
           <div class="listening-artwork-zone flex w-full min-h-0 flex-1 items-center justify-center">
             <div
               class="listening-artwork-button relative aspect-square shrink-0 overflow-hidden rounded-2xl shadow-2xl"
@@ -2539,6 +2599,10 @@
     --listening-heading-y: clamp(28px, 4.9vh, 45px);
     --listening-progress-y: clamp(32px, 5.45vh, 50px);
     --listening-controls-y: clamp(46px, 8.05vh, 74px);
+    --listening-artwork-fit-trim: 0px;
+    --listening-heading-fit-trim: 0px;
+    --listening-progress-fit-trim: 0px;
+    --listening-controls-fit-trim: 0px;
     height: 100%;
     min-height: 0;
     gap: 0;
@@ -2559,7 +2623,7 @@
     margin-top: clamp(0.35rem, 1vh, 0.7rem);
     padding: clamp(0.8rem, 2.2vh, 1.5rem) clamp(0.65rem, 2vw, 1.2rem);
     position: relative;
-    top: var(--listening-artwork-y);
+    top: max(0px, calc(var(--listening-artwork-y) - var(--listening-artwork-fit-trim)));
   }
 
   .listening-controls-panel {
@@ -2574,7 +2638,7 @@
   .listening-heading {
     margin-top: 0;
     position: relative;
-    top: var(--listening-heading-y);
+    top: max(0px, calc(var(--listening-heading-y) - var(--listening-heading-fit-trim)));
     margin-inline: auto;
   }
 
@@ -2583,14 +2647,14 @@
     margin-top: clamp(0.45rem, 1vh, 0.75rem);
     margin-inline: auto;
     position: relative;
-    top: var(--listening-progress-y);
+    top: max(0px, calc(var(--listening-progress-y) - var(--listening-progress-fit-trim)));
   }
 
   .listening-playback-controls {
     margin-top: clamp(0.35rem, 0.8vh, 0.6rem);
     margin-inline: auto;
     position: relative;
-    top: var(--listening-controls-y);
+    top: max(0px, calc(var(--listening-controls-y) - var(--listening-controls-fit-trim)));
   }
 
   .listening-artwork-button {
