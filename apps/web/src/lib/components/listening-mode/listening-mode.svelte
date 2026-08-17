@@ -119,6 +119,7 @@
   let chapterAnchorEl: HTMLButtonElement | undefined;
   let chapterPopoverStyle = '';
   let chapterPopoverMaxHeight = 352;
+  let progressTrackElement: HTMLDivElement | undefined;
   let showTotalDuration = false;
   let progressBarSessionOverride: ListeningProgressBar | undefined;
   let localAudioChapters: AudioChapter[] = [];
@@ -164,6 +165,7 @@
   let epubChapterTitle = '';
 
   const settingActions = ['play', 'pause', 'seekbackward', 'seekforward', 'seekto'] as const;
+  const progressThumbSizePx = 14;
   const mirrorVisualStyleProperties = [
     'color',
     'background-color',
@@ -262,7 +264,7 @@
   // An active illustration must render the exact same resource as the lightbox.
   // Do not send it through the cover fallback chain: a transient thumbnail load
   // error used to make the UI say “Illustration” while visibly showing the cover.
-  $: artworkUrl = displayedIllustrationUrl || baseArtworkUrl;
+  $: artworkUrl = displayedIllustration ? displayedIllustrationUrl : baseArtworkUrl;
   $: resolvedTitle = $activeCloudBook$?.title || bookTitle || 'Audiobook';
   $: resolvedAuthor = bookAuthor || $activeCloudBook$?.author || '';
   $: chapterHeading = getChapterHeading(
@@ -291,7 +293,7 @@
   }
   $: if (illustrationTimelineSignature !== lastIllustrationTimelineSignature) {
     lastIllustrationTimelineSignature = illustrationTimelineSignature;
-    resetIllustrationCursorToTime($currentTime$, true);
+    resetIllustrationCursorToTime($currentTime$, false);
     previousPlaybackTime = $currentTime$;
   }
   $: if (enabled !== previousEnabled) {
@@ -407,7 +409,7 @@
     ensureLocalIllustrationTimeline();
   }
   $: if ($audioSeeking$ !== previousAudioSeeking) {
-    resetIllustrationCursorToTime($currentTime$, true);
+    resetIllustrationCursorToTime($currentTime$, false);
     previousPlaybackTime = $currentTime$;
     suppressIllustrationJump = $audioSeeking$;
     previousAudioSeeking = $audioSeeking$;
@@ -881,12 +883,14 @@
     const looksLikeSeek =
       $audioSeeking$ ||
       suppressIllustrationJump ||
-      $paused$ ||
       delta < -0.05 ||
       delta > Math.max(3, ($playbackRate$ || 1) * 2.5);
 
-    if (looksLikeSeek) {
-      resetIllustrationCursorToTime(time, true);
+    // Pausing, scrubbing, or restoring progress must never surface a past
+    // illustration, but an illustration that is already on screen is latched
+    // until the listener dismisses it (or a later illustration replaces it).
+    if ($paused$ || looksLikeSeek) {
+      resetIllustrationCursorToTime(time, false);
       suppressIllustrationJump = false;
       previousPlaybackTime = time;
       return;
@@ -937,50 +941,178 @@
 
   function resolveIllustrationUrl(entry: IllustrationTimelineEntry): string {
     if (entry.href.startsWith('data:') && !entry.resourceKey) return entry.href;
+
+    // Prefer the live EPUB element identified by the same aligned text anchors
+    // used to build the illustration timeline. Cloud metadata may contain a
+    // blob: URL from a previous browser session; that URL cannot be reused,
+    // while the currently rendered EPUB image always has a valid currentSrc.
+    const anchoredUrl = findRenderedIllustrationByAnchors(entry);
+    if (anchoredUrl) return anchoredUrl;
+
     const resourceKey = normalizeResourceKey(entry.resourceKey || entry.href);
-    const matchingBlob = Object.entries(bookBlobs).find(([key]) => {
-      const normalizedKey = normalizeResourceKey(key);
-      return (
-        normalizedKey === resourceKey ||
-        normalizedKey.endsWith(`/${resourceKey}`) ||
-        resourceKey.endsWith(`/${normalizedKey}`)
-      );
-    });
+    const matchingBlob = findIllustrationBlob(resourceKey);
     if (matchingBlob) {
-      const existing = localIllustrationUrls.get(matchingBlob[0]);
+      const [blobKey, sourceBlob] = matchingBlob;
+      const existing = localIllustrationUrls.get(blobKey);
       if (existing) return existing;
-      const url = URL.createObjectURL(matchingBlob[1]);
-      localIllustrationUrls.set(matchingBlob[0], url);
+
+      // EPUB image blobs frequently arrive without a MIME type. The normal
+      // reader fixes that before creating its object URLs; Listening Mode must
+      // do the same or Chrome can reject an otherwise valid illustration.
+      const displayBlob = ensureIllustrationMimeType(sourceBlob, blobKey);
+      const url = URL.createObjectURL(displayBlob);
+      localIllustrationUrls.set(blobKey, url);
       return url;
     }
 
     const renderedImage = [
       ...(contentRoot?.querySelectorAll<HTMLElement>('img, svg image') || [])
-    ].find((image) => {
-      const key = image.getAttribute('data-ttu-book-image-key');
-      const source = image.getAttribute('src') || image.getAttribute('href') || '';
-      return (key && normalizeResourceKey(key) === resourceKey) || source === entry.href;
-    });
-    return (
-      renderedImage?.getAttribute('src') ||
-      renderedImage?.getAttribute('href') ||
-      (!entry.href.includes('ttu:') ? entry.href : '')
+    ].find((image) => renderedImageMatchesResource(image, resourceKey, entry.href));
+    if (renderedImage) return renderedImageUrl(renderedImage);
+
+    // A relative EPUB path is not a usable browser URL from /b/. Returning it
+    // used to create the Illustration/Dismiss controls around a broken image.
+    // Only already-resolved browser URLs are safe as a final fallback.
+    if (/^(?:blob:|data:|https?:)/i.test(entry.href)) return entry.href;
+    return '';
+  }
+
+  function findRenderedIllustrationByAnchors(entry: IllustrationTimelineEntry): string {
+    if (!contentRoot) return '';
+
+    const beforeLine = entry.beforeSubtitleId
+      ? contentRoot.querySelector<HTMLElement>(getLineCSSSelectorForId(entry.beforeSubtitleId))
+      : null;
+    const afterLine = entry.afterSubtitleId
+      ? contentRoot.querySelector<HTMLElement>(getLineCSSSelectorForId(entry.afterSubtitleId))
+      : null;
+    if (!beforeLine && !afterLine) return '';
+
+    const candidates = [...contentRoot.querySelectorAll<HTMLElement>('img, svg image')].filter(
+      (image) =>
+        (!beforeLine || nodeComesBefore(beforeLine, image)) &&
+        (!afterLine || nodeComesBefore(image, afterLine))
     );
+    if (!candidates.length) return '';
+
+    // If several images share the same pair of text anchors, preserve the exact
+    // EPUB resource whenever the timeline has one.
+    const resourceKey = entry.resourceKey
+      ? normalizeResourceKey(entry.resourceKey)
+      : '';
+    if (resourceKey) {
+      const exact = candidates.find((image) =>
+        renderedImageMatchesResource(image, resourceKey, entry.href)
+      );
+      if (exact) return renderedImageUrl(exact);
+    }
+
+    // With only a before anchor the first following image is the nearest one;
+    // with only an after anchor the last preceding image is the nearest one.
+    const image = beforeLine ? candidates[0] : candidates[candidates.length - 1];
+    return image ? renderedImageUrl(image) : '';
+  }
+
+  function nodeComesBefore(first: Node, second: Node): boolean {
+    return Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
+  }
+
+  function renderedImageUrl(image: HTMLElement): string {
+    if (image instanceof HTMLImageElement && image.currentSrc) return image.currentSrc;
+    return (
+      image.getAttribute('src') ||
+      image.getAttribute('href') ||
+      image.getAttribute('xlink:href') ||
+      ''
+    );
+  }
+
+  function findIllustrationBlob(resourceKey: string): [string, Blob] | undefined {
+    const entries = Object.entries(bookBlobs);
+    const exact = entries.find(([key]) => resourceKeysMatch(normalizeResourceKey(key), resourceKey));
+    if (exact) return exact;
+
+    // Some EPUBs disagree only about containing folders. A basename fallback
+    // is safe when it uniquely identifies one blob in the book.
+    const basename = resourceKey.split('/').pop();
+    if (!basename) return undefined;
+    const basenameMatches = entries.filter(
+      ([key]) => normalizeResourceKey(key).split('/').pop() === basename
+    );
+    return basenameMatches.length === 1 ? basenameMatches[0] : undefined;
+  }
+
+  function renderedImageMatchesResource(
+    image: HTMLElement,
+    resourceKey: string,
+    originalHref: string
+  ): boolean {
+    const explicitKey = image.getAttribute('data-ttu-book-image-key') || '';
+    if (explicitKey && resourceKeysMatch(normalizeResourceKey(explicitKey), resourceKey)) return true;
+
+    const references = [
+      image.getAttribute('src'),
+      image.getAttribute('href'),
+      image.getAttribute('xlink:href'),
+      image.getAttribute('data-src')
+    ].filter((value): value is string => Boolean(value));
+    return references.some(
+      (reference) =>
+        reference === originalHref || resourceKeysMatch(normalizeResourceKey(reference), resourceKey)
+    );
+  }
+
+  function resourceKeysMatch(first: string, second: string): boolean {
+    return (
+      first === second ||
+      first.endsWith(`/${second}`) ||
+      second.endsWith(`/${first}`)
+    );
+  }
+
+  function ensureIllustrationMimeType(blob: Blob, key: string): Blob {
+    if (blob.type?.startsWith('image/')) return blob;
+    const cleanKey = key.split(/[?#]/, 1)[0].toLowerCase();
+    const extension = cleanKey.includes('.') ? cleanKey.split('.').pop() || '' : '';
+    const mimeType =
+      ({
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        png: 'image/png',
+        gif: 'image/gif',
+        webp: 'image/webp',
+        svg: 'image/svg+xml',
+        avif: 'image/avif',
+        bmp: 'image/bmp'
+      } as Record<string, string>)[extension] || blob.type;
+    return mimeType && mimeType !== blob.type ? new Blob([blob], { type: mimeType }) : blob;
   }
 
   function normalizeResourceKey(value: string): string {
     const marker = value.match(/(?:^|[;?])ttu:([^;?"']+)/i)?.[1] || value;
     try {
-      return decodeURIComponent(marker).replaceAll('\\', '/').replace(/^\.\//, '').toLowerCase();
+      return decodeURIComponent(marker)
+        .replaceAll('\\', '/')
+        .replace(/[?#].*$/, '')
+        .replace(/^\.\//, '')
+        .replace(/^(?:\.\.\/)+/, '')
+        .replace(/^\//, '')
+        .toLowerCase();
     } catch {
-      return marker.replaceAll('\\', '/').replace(/^\.\//, '').toLowerCase();
+      return marker
+        .replaceAll('\\', '/')
+        .replace(/[?#].*$/, '')
+        .replace(/^\.\//, '')
+        .replace(/^(?:\.\.\/)+/, '')
+        .replace(/^\//, '')
+        .toLowerCase();
     }
   }
 
   function seekTo(seconds: number, subtitle?: Subtitle) {
     const target = Math.min(Math.max(0, seconds), $duration$ || Math.max(0, seconds));
     suppressIllustrationJump = true;
-    resetIllustrationCursorToTime(target, true);
+    resetIllustrationCursorToTime(target, false);
     previousPlaybackTime = target;
     executeAction(Action.RESTART_PLAYBACK, subtitle || getDummySubtitle(target), {
       keepPauseState: true
@@ -1021,6 +1153,52 @@
   $: sortedSubtitles = [...$currentSubtitles$.values()].sort(
     (first, second) => first.startSeconds - second.startSeconds
   );
+
+  function chapterTickLeft(startSeconds: number): string {
+    const span = progressEnd - progressStart;
+    if (!(span > 0)) return '0px';
+    const ratio = Math.min(1, Math.max(0, (startSeconds - progressStart) / span));
+    const thumbOffset = (0.5 - ratio) * progressThumbSizePx;
+    return `calc(${ratio * 100}% + ${thumbOffset}px)`;
+  }
+
+  function progressThumbChapterStripe(): { left: number; right: number } {
+    const span = progressEnd - progressStart;
+    const width = progressTrackElement?.clientWidth || 0;
+    if (!(span > 0) || !(width > progressThumbSizePx) || !chapterTicks.length) {
+      return { left: 0, right: 0 };
+    }
+
+    const currentRatio = Math.min(1, Math.max(0, (progressValue - progressStart) / span));
+    const travelWidth = width - progressThumbSizePx;
+    const thumbRadius = progressThumbSizePx / 2;
+    const markerHalfWidth = 2;
+
+    let closestOffset = Number.POSITIVE_INFINITY;
+    for (const tick of chapterTicks) {
+      const tickRatio = Math.min(1, Math.max(0, (tick.startSeconds - progressStart) / span));
+      const offset = (tickRatio - currentRatio) * travelWidth;
+      if (Math.abs(offset) < Math.abs(closestOffset)) closestOffset = offset;
+    }
+
+    // The stripe is painted *inside the native range thumb itself*. This is
+    // intentionally not a z-index overlay: Chromium paints range thumbs in a
+    // separate native layer, so ordinary elements cannot reliably draw over
+    // them. The thumb's border-radius clips this rectangular stripe into the
+    // exact circular chord where the chapter marker intersects the thumb.
+    if (Math.abs(closestOffset) >= thumbRadius + markerHalfWidth) {
+      return { left: 0, right: 0 };
+    }
+
+    const markerCenterInThumb = thumbRadius + closestOffset;
+    return {
+      left: Math.max(0, markerCenterInThumb - markerHalfWidth),
+      right: Math.min(progressThumbSizePx, markerCenterInThumb + markerHalfWidth)
+    };
+  }
+
+  $: thumbChapterStripe = progressThumbChapterStripe();
+
 
   function seekFromProgress(event: Event) {
     const value = Number((event.currentTarget as HTMLInputElement).value);
@@ -1690,16 +1868,29 @@
               >
                 <Fa icon={faBookOpen} />
               </div>
-              {#if artworkUrl}
+              {#if displayedIllustration}
+                {#if displayedIllustrationUrl}
+                  {#key displayedIllustrationUrl}
+                    <span class="listening-artwork-ambient absolute inset-0" aria-hidden="true">
+                      <img src={displayedIllustrationUrl} alt="" class="h-full w-full object-cover" />
+                    </span>
+                    <img
+                      src={displayedIllustrationUrl}
+                      alt={displayedIllustration.alt || 'Current illustration'}
+                      class="absolute inset-0 z-[2] block h-full w-full object-contain"
+                    />
+                  {/key}
+                {/if}
+              {:else if baseArtworkUrl}
                 <span class="listening-artwork-ambient absolute inset-0" aria-hidden="true">
-                  <img src={artworkUrl} alt="" class="h-full w-full object-cover" />
+                  <img src={baseArtworkUrl} alt="" class="h-full w-full object-cover" />
                 </span>
                 <img
-                  src={artworkUrl}
-                  alt={displayedIllustration?.alt || `${resolvedTitle} cover`}
-                  class="relative z-[1] block h-full w-full object-contain"
-                  on:load={() => markArtworkLoaded(artworkUrl)}
-                  on:error={() => markArtworkFailed(artworkUrl)}
+                  src={baseArtworkUrl}
+                  alt={`${resolvedTitle} cover`}
+                  class="absolute inset-0 z-[1] block h-full w-full object-contain"
+                  on:load={() => markArtworkLoaded(baseArtworkUrl)}
+                  on:error={() => markArtworkFailed(baseArtworkUrl)}
                 />
               {/if}
             </button>
@@ -1804,7 +1995,7 @@
                 {/if}
               </button>
             </div>
-            <div class="listening-progress-track relative">
+            <div class="listening-progress-track relative" bind:this={progressTrackElement}>
               <input
                 class="listening-progress block w-full"
                 type="range"
@@ -1815,16 +2006,19 @@
                 aria-label={effectiveProgressBar === 'chapter'
                   ? 'Chapter progress'
                   : 'Book progress'}
+                style={`--listening-progress-fill: ${chapterTickLeft(progressValue)}; --listening-thumb-marker-left: ${thumbChapterStripe.left}px; --listening-thumb-marker-right: ${thumbChapterStripe.right}px`}
                 on:input={seekFromProgress}
               />
               {#each chapterTicks as tick}
                 <button
-                  class="listening-chapter-tick absolute h-3 w-1 -translate-x-1/2 rounded-full"
-                  style={`left: ${((tick.startSeconds - progressStart) / (progressEnd - progressStart)) * 100}%`}
+                  class="listening-chapter-tick absolute h-3 w-3 -translate-x-1/2"
+                  style={`left: ${chapterTickLeft(tick.startSeconds)}`}
                   title={`${tick.label || 'Chapter'} · ${formatTime(tick.startSeconds)}`}
                   aria-label={`Go to ${tick.label || 'chapter'} at ${formatTime(tick.startSeconds)}`}
                   on:click={() => seekTo(tick.startSeconds)}
-                ></button>
+                >
+                  <span class="listening-chapter-tick-base"></span>
+                </button>
               {/each}
             </div>
             <div class="listening-progress-meta mt-1 grid grid-cols-[1fr_auto_1fr] items-start text-[0.68rem] uppercase tracking-[0.18em] text-white/55">
@@ -2513,29 +2707,109 @@
   }
 
   .listening-progress-track {
+    --listening-progress-thumb-size: 14px;
     height: 1rem;
   }
 
   .listening-progress {
+    position: relative;
+    z-index: 1;
     display: block;
     width: 100%;
     height: 1rem;
     margin: 0;
-    accent-color: var(--ttu-blue-500, #2196f3);
+    padding: 0;
+    appearance: none;
+    -webkit-appearance: none;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .listening-progress::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 999px;
+    background: linear-gradient(
+      to right,
+      var(--ttu-blue-500, #2196f3) 0 var(--listening-progress-fill),
+      rgba(255, 255, 255, 0.58) var(--listening-progress-fill) 100%
+    );
+  }
+
+  .listening-progress::-webkit-slider-thumb {
+    width: var(--listening-progress-thumb-size);
+    height: var(--listening-progress-thumb-size);
+    margin-top: -5px;
+    appearance: none;
+    -webkit-appearance: none;
+    border: 0;
+    border-radius: 50%;
+    background: linear-gradient(
+      to right,
+      var(--ttu-blue-500, #2196f3) 0 var(--listening-thumb-marker-left, 0px),
+      #de690c var(--listening-thumb-marker-left, 0px) var(--listening-thumb-marker-right, 0px),
+      var(--ttu-blue-500, #2196f3) var(--listening-thumb-marker-right, 0px) 100%
+    );
+    box-shadow: none;
+  }
+
+  .listening-progress::-moz-range-track {
+    height: 4px;
+    border: 0;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.58);
+  }
+
+  .listening-progress::-moz-range-progress {
+    height: 4px;
+    border-radius: 999px;
+    background: var(--ttu-blue-500, #2196f3);
+  }
+
+  .listening-progress::-moz-range-thumb {
+    width: var(--listening-progress-thumb-size);
+    height: var(--listening-progress-thumb-size);
+    border: 0;
+    border-radius: 50%;
+    background: linear-gradient(
+      to right,
+      var(--ttu-blue-500, #2196f3) 0 var(--listening-thumb-marker-left, 0px),
+      #de690c var(--listening-thumb-marker-left, 0px) var(--listening-thumb-marker-right, 0px),
+      var(--ttu-blue-500, #2196f3) var(--listening-thumb-marker-right, 0px) 100%
+    );
   }
 
   .listening-chapter-tick {
     top: 50%;
-    background: #8f95ad;
+    z-index: 10;
+    border: 0;
+    background: transparent;
+    padding: 0;
     transform: translate(-50%, -50%);
+    overflow: visible;
+  }
+
+  .listening-chapter-tick-base {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 0.25rem;
+    height: 0.75rem;
+    border-radius: 999px;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    background: #8f95ad;
     transition: background-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
   }
 
-  .listening-chapter-tick:hover,
-  .listening-chapter-tick:focus-visible {
+  .listening-chapter-tick:hover .listening-chapter-tick-base,
+  .listening-chapter-tick:focus-visible .listening-chapter-tick-base {
     background: var(--ttu-blue-400, #42a5f5);
     box-shadow: 0 0 0 2px rgb(66 165 245 / 0.22), 0 0 8px rgb(66 165 245 / 0.55);
     transform: translate(-50%, -50%) scale(1.35);
+  }
+
+  .listening-chapter-tick:focus-visible {
+    outline: none;
   }
 
   :global(.ttu-listening-reader-muted) {
