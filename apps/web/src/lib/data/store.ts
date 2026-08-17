@@ -61,6 +61,39 @@ import { ViewMode } from './view-mode';
 import type { WritingMode } from './writing-mode';
 import { writableSetLocalStorageSubject } from './internal/writable-set-local-storage-subject';
 import { writableStringLocalStorageSubject } from './internal/writable-string-local-storage-subject';
+import type {
+  ListeningOpeningMode,
+  ListeningProgressBar
+} from '$lib/listening-mode/types';
+
+export const audiobookDefaultOpeningMode$ = writableStringLocalStorageSubject<ListeningOpeningMode>()(
+  'audiobookDefaultOpeningMode',
+  'reading'
+);
+export const audiobookDefaultProgressBar$ = writableStringLocalStorageSubject<ListeningProgressBar>()(
+  'audiobookDefaultProgressBar',
+  'chapter'
+);
+export const audiobookDefaultShowSentence$ = writableBooleanLocalStorageSubject()(
+  'audiobookDefaultShowSentence',
+  false
+);
+export const audiobookDefaultKeepReaderActive$ = writableBooleanLocalStorageSubject()(
+  'audiobookDefaultKeepReaderActive',
+  true
+);
+export const audiobookDefaultShowIllustrations$ = writableBooleanLocalStorageSubject()(
+  'audiobookDefaultShowIllustrations',
+  true
+);
+export const audiobookDefaultIllustrationNotification$ = writableBooleanLocalStorageSubject()(
+  'audiobookDefaultIllustrationNotification',
+  false
+);
+export const audiobookDefaultSkipSeconds$ = writableNumberLocalStorageSubject()(
+  'audiobookDefaultSkipSeconds',
+  10
+);
 
 export const theme$ = writableStringLocalStorageSubject()('theme', 'light-theme');
 export const customThemes$ = writableObjectLocalStorageSubject<Record<string, ThemeOption>>()(

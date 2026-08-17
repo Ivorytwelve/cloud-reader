@@ -7,6 +7,7 @@ import type {
   ProgressSnapshot,
   CloudStatisticAggregate,
   CloudStatisticSnapshot,
+  IllustrationTimelineEntry,
   LibraryManifest,
   MultipartCompleteBody,
 } from './types';
@@ -510,6 +511,35 @@ function sanitizeAlignment(input: unknown): CloudBook['alignment'] | undefined {
   const totalLines = Math.max(0, Math.floor(Number(raw.totalLines) || 0));
   const diffLines = Math.max(0, Math.floor(Number(raw.diffLines) || 0));
   const rate = totalLines ? Math.min(1, Math.max(0, Number(raw.rate) || matchedLines / totalLines)) : 0;
+  const illustrationsProvided = Array.isArray(raw.illustrations);
+  const illustrations = illustrationsProvided
+    ? (raw.illustrations as unknown[]).slice(0, 1500).flatMap((illustration): IllustrationTimelineEntry[] => {
+        if (!illustration || typeof illustration !== 'object') return [];
+        const item = illustration as Record<string, unknown>;
+        const triggerSeconds = Number(item.triggerSeconds);
+        const href = String(item.href || '').trim();
+        if (!Number.isFinite(triggerSeconds) || triggerSeconds < 0 || !href) return [];
+        const confidence =
+          item.confidence === 'high' ? 'high' : item.confidence === 'medium' ? 'medium' : undefined;
+        if (!confidence) return [];
+        return [
+          {
+            id: String(item.id || '').slice(0, 100) || `illustration-${triggerSeconds}`,
+            triggerSeconds,
+            href: href.slice(0, 2000),
+            ...(item.resourceKey == null ? {} : { resourceKey: String(item.resourceKey).slice(0, 1000) }),
+            ...(item.alt == null ? {} : { alt: String(item.alt).slice(0, 1000) }),
+            confidence,
+            ...(item.beforeSubtitleId == null
+              ? {}
+              : { beforeSubtitleId: String(item.beforeSubtitleId).slice(0, 200) }),
+            ...(item.afterSubtitleId == null
+              ? {}
+              : { afterSubtitleId: String(item.afterSubtitleId).slice(0, 200) })
+          }
+        ];
+      })
+    : undefined;
   return {
     version: 1,
     source,
@@ -519,7 +549,47 @@ function sanitizeAlignment(input: unknown): CloudBook['alignment'] | undefined {
     totalLines,
     diffLines,
     rate,
+    ...(illustrationsProvided ? { illustrations: illustrations || [] } : {}),
   };
+}
+
+function sanitizeListeningSettings(input: unknown): CloudBook['listeningSettings'] | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const raw = input as Record<string, unknown>;
+  const nullableBoolean = (value: unknown): boolean | null | undefined => {
+    if (value === null) return null;
+    return typeof value === 'boolean' ? value : undefined;
+  };
+  const nullableOpeningMode =
+    raw.openingMode === null
+      ? null
+      : raw.openingMode === 'reading' || raw.openingMode === 'listening'
+        ? raw.openingMode
+        : undefined;
+  const nullableProgressBar =
+    raw.progressBar === null
+      ? null
+      : raw.progressBar === 'chapter' || raw.progressBar === 'book'
+        ? raw.progressBar
+        : undefined;
+  const settings: NonNullable<CloudBook['listeningSettings']> = {};
+  if (nullableOpeningMode !== undefined) settings.openingMode = nullableOpeningMode;
+  if (nullableProgressBar !== undefined) settings.progressBar = nullableProgressBar;
+  const showSentence = nullableBoolean(raw.showSentence);
+  const keepReaderActive = nullableBoolean(raw.keepReaderActive);
+  const showIllustrations = nullableBoolean(raw.showIllustrations);
+  const illustrationNotification = nullableBoolean(raw.illustrationNotification);
+  if (showSentence !== undefined) settings.showSentence = showSentence;
+  if (keepReaderActive !== undefined) settings.keepReaderActive = keepReaderActive;
+  if (showIllustrations !== undefined) settings.showIllustrations = showIllustrations;
+  if (illustrationNotification !== undefined) settings.illustrationNotification = illustrationNotification;
+  const skipSeconds = raw.skipSeconds === null
+    ? null
+    : Number.isFinite(Number(raw.skipSeconds))
+      ? Math.max(1, Math.min(120, Math.round(Number(raw.skipSeconds))))
+      : undefined;
+  if (skipSeconds !== undefined) settings.skipSeconds = skipSeconds;
+  return Object.keys(settings).length ? settings : undefined;
 }
 
 async function readManifest(env: Env): Promise<{ manifest: LibraryManifest; etag?: string }> {
@@ -717,6 +787,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       const author = body.author == null ? undefined : String(body.author).trim().slice(0, 500) || undefined;
       const audio = sanitizeAudio(body.audio);
       const alignment = sanitizeAlignment(body.alignment);
+      const listeningSettings = sanitizeListeningSettings(body.listeningSettings);
       const requestedShelf = body.shelf === 'history' || body.shelf === 'library' ? body.shelf : undefined;
       const requestedFinishedAt = Number(body.finishedAt);
       const finishedAt = Number.isFinite(requestedFinishedAt) && requestedFinishedAt > 0
@@ -735,6 +806,13 @@ async function route(request: Request, env: Env): Promise<Response> {
           assets: old?.assets || {},
           audio: audio ?? old?.audio,
           alignment: alignment ?? old?.alignment,
+          // Listening settings are a sparse per-book patch. Merge fields into
+          // the existing object so simultaneous/older clients changing a
+          // different preference cannot erase unrelated overrides. Explicit
+          // null is preserved and means "inherit this device's local default".
+          listeningSettings: listeningSettings
+            ? { ...(old?.listeningSettings || {}), ...listeningSettings }
+            : old?.listeningSettings,
           shelf,
           finishedAt: shelf === 'history' ? (finishedAt ?? old?.finishedAt ?? now) : undefined,
         };

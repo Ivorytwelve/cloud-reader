@@ -24,7 +24,12 @@
   import { browser } from '$app/environment';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
-  import { faCloudBolt, faSpinner } from '@fortawesome/free-solid-svg-icons';
+  import {
+    faBookOpen,
+    faCloudBolt,
+    faHeadphones,
+    faSpinner
+  } from '@fortawesome/free-solid-svg-icons';
   import BookReader from '$lib/components/book-reader/book-reader.svelte';
   import type {
     AutoScroller,
@@ -174,6 +179,7 @@
   import { onDestroy, onMount, tick } from 'svelte';
   import Fa from 'svelte-fa';
   import NativeWhispersync from '$lib/whispersync-native/native-whispersync.svelte';
+  import { listeningAudioAvailable$ } from '$lib/listening-mode/session-state';
   import {
     hydrateLinkedCloudReaderProgress,
     saveLinkedCloudReaderProgress
@@ -231,6 +237,9 @@
   let dismissDialogs = true;
   let syncedResolver: () => void;
   let currentWhispersyncBookId = 0;
+  let listeningModeActive = false;
+  let hasListeningAudio = false;
+  let ListeningModeComponent: any;
 
   const syncedPromise = new Promise<void>((resolver) => {
     syncedResolver = resolver;
@@ -245,6 +254,8 @@
   const verticalTextOrientation = $verticalMode$ ? $verticalTextOrientation$ : '';
 
   $: currentWhispersyncBookId = browser ? Number($page.url.searchParams.get('id') || 0) : 0;
+  $: hasListeningAudio = $listeningAudioAvailable$;
+  $: if (listeningModeActive && !hasListeningAudio) listeningModeActive = false;
 
   const bookId$ = iffBrowser(() => readableToObservable(page)).pipe(
     map((pageObj) => Number(pageObj.url.searchParams.get('id'))),
@@ -583,6 +594,11 @@
   }
 
   onMount(() => {
+    let cancelled = false;
+    void import('$lib/components/listening-mode/listening-mode.svelte').then((module) => {
+      if (!cancelled) ListeningModeComponent = module.default;
+    });
+
     document.addEventListener('ttu-action', handleAction, false);
     cloudReaderAutosaveNotBefore = Date.now() + 8000;
 
@@ -590,6 +606,7 @@
     window.addEventListener('pagehide', onPageHide);
 
     return () => {
+      cancelled = true;
       window.removeEventListener('pagehide', onPageHide);
     };
   });
@@ -1821,6 +1838,31 @@
     on:bookmark={bookmarkPage}
     on:trackerPause={() => pauseTracker(true)}
   />
+  {#if ListeningModeComponent}
+    <svelte:component
+      this={ListeningModeComponent}
+      bind:enabled={listeningModeActive}
+      localBookId={currentWhispersyncBookId}
+      bookTitle={$rawBookData$.title}
+      bookAuthor=""
+      bookCover={$rawBookData$.coverImage}
+      bookBlobs={$rawBookData$.blobs}
+      showFullscreenButton={fullscreenManager.fullscreenEnabled}
+      hasImageGallery={!!$readerImageGalleryPictures$.length}
+      on:bookmarkClick={bookmarkPage}
+      on:fullscreenClick={onFullscreenClick}
+      on:statisticsClick={() => {
+        if ($rawBookData$) {
+          $preFilteredTitlesForStatistics$ = new Set([$rawBookData$.title]);
+        }
+        leaveReader(mergeEntries.STATISTICS.routeId, false);
+      }}
+      on:readerImageGalleryClick={() => (showReaderImageGallery = true)}
+      on:readerSettingsClick={() => leaveReader(mergeEntries.SETTINGS.routeId, false)}
+      on:bookManagerClick={() => leaveReader(mergeEntries.MANAGE.routeId)}
+      on:completeBook={completeBook}
+    />
+  {/if}
   {$initBookmarkData$ ?? ''}
   {$setBackgroundColor$ ?? ''}
   {$setWritingMode$ ?? ''}
@@ -1905,6 +1947,16 @@
   on:keyup={dummyFn}
 >
   <div class="flex h-full">
+    {#if ListeningModeComponent && hasListeningAudio}
+      <button
+        class="flex h-full w-8 items-center justify-center text-sm sm:text-lg"
+        title={listeningModeActive ? 'Return to Reading Mode' : 'Open Listening Mode'}
+        aria-label={listeningModeActive ? 'Return to Reading Mode' : 'Open Listening Mode'}
+        on:click|stopPropagation={() => (listeningModeActive = !listeningModeActive)}
+      >
+        <Fa icon={listeningModeActive ? faBookOpen : faHeadphones} />
+      </button>
+    {/if}
     <NativeWhispersync currentBookId={currentWhispersyncBookId} />
     {#if dataToReplicate.length}
       <div

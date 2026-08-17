@@ -10,6 +10,13 @@
     adjustStatisticsAfterIdleTime$,
     audiobookCountShortPauses$,
     audiobookShortPauseSeconds$,
+    audiobookDefaultOpeningMode$,
+    audiobookDefaultProgressBar$,
+    audiobookDefaultShowSentence$,
+    audiobookDefaultKeepReaderActive$,
+    audiobookDefaultShowIllustrations$,
+    audiobookDefaultIllustrationNotification$,
+    audiobookDefaultSkipSeconds$,
     autoBookmark$,
     autoBookmarkTime$,
     autoPositionOnResize$,
@@ -218,6 +225,13 @@
       bind:adjustStatisticsAfterIdleTime={$adjustStatisticsAfterIdleTime$}
       bind:audiobookCountShortPauses={$audiobookCountShortPauses$}
       bind:audiobookShortPauseSeconds={$audiobookShortPauseSeconds$}
+      bind:audiobookDefaultOpeningMode={$audiobookDefaultOpeningMode$}
+      bind:audiobookDefaultProgressBar={$audiobookDefaultProgressBar$}
+      bind:audiobookDefaultShowSentence={$audiobookDefaultShowSentence$}
+      bind:audiobookDefaultKeepReaderActive={$audiobookDefaultKeepReaderActive$}
+      bind:audiobookDefaultShowIllustrations={$audiobookDefaultShowIllustrations$}
+      bind:audiobookDefaultIllustrationNotification={$audiobookDefaultIllustrationNotification$}
+      bind:audiobookDefaultSkipSeconds={$audiobookDefaultSkipSeconds$}
     />
   </div>
 </div>

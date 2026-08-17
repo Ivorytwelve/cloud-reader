@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { listeningAudioAvailable$, listeningSessionReady$ } from '$lib/listening-mode/session-state';
   import '$lib/whispersync-upstream/styles.css';
 
   export let currentBookId: number;
@@ -19,6 +20,7 @@
       | ((force?: boolean) => Promise<void>)
       | undefined;
     let removeReadyListener: (() => void) | undefined;
+    let removeAudioAvailabilitySubscriptions: (() => void) | undefined;
 
     const initialise = async () => {
       try {
@@ -34,6 +36,27 @@
         clearCloudAudiobookSession = bridgeModule.clearCloudAudiobookSession;
         saveCloudAudiobookProgress = bridgeModule.saveCloudAudiobookProgress;
         removeCloudProgressEvents = bridgeModule.installCloudAudiobookProgressEvents();
+
+        // Keep the page shell informed without importing the large Whispersync
+        // store module during SSR. This also tracks a locally selected audio file,
+        // not only cloud audio.
+        let audioLoaded = false;
+        let audioSourceUrl = '';
+        const publishAudioAvailability = () =>
+          listeningAudioAvailable$.set(Boolean(audioLoaded || audioSourceUrl));
+        const unsubscribeAudioLoaded = storesModule.currentAudioLoaded$.subscribe((value) => {
+          audioLoaded = value;
+          publishAudioAvailability();
+        });
+        const unsubscribeAudioSource = storesModule.currentAudioSourceUrl$.subscribe((value) => {
+          audioSourceUrl = value;
+          publishAudioAvailability();
+        });
+        removeAudioAvailabilitySubscriptions = () => {
+          unsubscribeAudioLoaded();
+          unsubscribeAudioSource();
+          listeningAudioAvailable$.set(false);
+        };
 
         const findBookContent = () => {
           if (cancelled) return;
@@ -59,10 +82,14 @@
             cloudOpened = true;
             document.removeEventListener('ttu-cloud:whispersync-ready', onWhispersyncReady);
 
-            void bridgeModule.autoOpenCloudAudiobookForLocalBook(currentBookId).catch((error) => {
-              const message = error instanceof Error ? error.message : String(error);
-              storesModule.lastError$.set(`Cloud audiobook failed: ${message}`);
-            });
+            void bridgeModule.autoOpenCloudAudiobookForLocalBook(currentBookId)
+              .catch((error) => {
+                const message = error instanceof Error ? error.message : String(error);
+                storesModule.lastError$.set(`Cloud audiobook failed: ${message}`);
+              })
+              .finally(() => {
+                if (!cancelled) listeningSessionReady$.set({ localBookId: currentBookId });
+              });
           };
 
           // Register before mounting: AudioBookMenu emits this only after its own
@@ -85,6 +112,7 @@
 
     return () => {
       cancelled = true;
+      listeningSessionReady$.set(undefined);
       if (timer) window.clearTimeout(timer);
 
       // SPA navigation does not necessarily trigger visibilitychange, so persist
@@ -93,6 +121,7 @@
       if (savePromise) void savePromise.catch(() => undefined);
 
       removeReadyListener?.();
+      removeAudioAvailabilitySubscriptions?.();
       removeCloudProgressEvents?.();
       clearCloudAudiobookSession?.();
     };

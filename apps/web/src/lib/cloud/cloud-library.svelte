@@ -12,6 +12,7 @@
   import { linkCloudBook, unlinkCloudBook } from './book-links';
   import { loadCloudConfig } from './config';
   import { addBookToCloud } from './library';
+  import { inferIllustrationTimeline } from './illustration-timeline';
   import { applyRemoteReaderProgress, ensureCloudBookLocal } from './local-library';
   import { clearCloudProgressSession, seedCloudProgressSession } from './progress-session';
   import type { CloudAlignmentInfo, CloudBook, CloudLibrarySnapshot, CloudProgress, CloudQuotaStatus, LibraryManifest } from './types';
@@ -394,7 +395,8 @@
             matchedLines: result.matchedLines,
             totalLines: result.totalLines,
             diffLines: result.diffLines,
-            rate: result.rate
+            rate: result.rate,
+            illustrations: inferIllustrationTimeline(result.elementHtml, [...parsedSubtitles.values()])
           };
           lastAlignmentInfo = alignmentInfo;
           alignmentFile = new File([alignmentHtml], 'whispersync-alignment.html', { type: 'text/html;charset=utf-8' });

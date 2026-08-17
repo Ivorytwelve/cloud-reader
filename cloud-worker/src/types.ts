@@ -25,6 +25,28 @@ export interface CloudAlignmentInfo {
   totalLines: number;
   diffLines: number;
   rate: number;
+  illustrations?: IllustrationTimelineEntry[];
+}
+
+export interface CloudListeningSettings {
+  openingMode?: 'reading' | 'listening' | null;
+  progressBar?: 'chapter' | 'book' | null;
+  showSentence?: boolean | null;
+  keepReaderActive?: boolean | null;
+  showIllustrations?: boolean | null;
+  illustrationNotification?: boolean | null;
+  skipSeconds?: number | null;
+}
+
+export interface IllustrationTimelineEntry {
+  id: string;
+  triggerSeconds: number;
+  href: string;
+  resourceKey?: string;
+  alt?: string;
+  confidence: 'high' | 'medium';
+  beforeSubtitleId?: string;
+  afterSubtitleId?: string;
 }
 
 export interface CloudBook {
@@ -39,6 +61,7 @@ export interface CloudBook {
     chapters?: AudioChapter[];
   };
   alignment?: CloudAlignmentInfo;
+  listeningSettings?: CloudListeningSettings;
   shelf?: CloudBookShelf;
   finishedAt?: number;
 }

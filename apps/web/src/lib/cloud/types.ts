@@ -1,5 +1,12 @@
+/**
+ * @license BSD-3-Clause
+ * Copyright (c) 2026, ッツ Reader Authors
+ * All rights reserved.
+ */
+
 export type AssetKind = 'epub' | 'audio' | 'subtitles' | 'cover' | 'audioCover' | 'alignment';
 export type CloudBookShelf = 'library' | 'history';
+import type { CloudListeningSettings, IllustrationTimelineEntry } from '$lib/listening-mode/types';
 
 export interface BookAsset {
   kind: AssetKind;
@@ -25,6 +32,8 @@ export interface CloudAlignmentInfo {
   totalLines: number;
   diffLines: number;
   rate: number;
+  /** Inferred once from the aligned EPUB and reused by every device. */
+  illustrations?: IllustrationTimelineEntry[];
 }
 
 export interface CloudBook {
@@ -39,6 +48,8 @@ export interface CloudBook {
     chapters?: AudioChapter[];
   };
   alignment?: CloudAlignmentInfo;
+  /** Per-book overrides. Omitted fields (or null) inherit local defaults. */
+  listeningSettings?: CloudListeningSettings;
   /** Cloud is canonical; local Ttsu copies are only a per-device cache. */
   shelf?: CloudBookShelf;
   /** Timestamp set when the user explicitly moves the title to reading history. */

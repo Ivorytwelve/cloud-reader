@@ -27,6 +27,7 @@ export default function formatBookDataHtml(
       const element = document.createElement('div');
       element.innerHTML = elementHtml;
 
+      addImageResourceKeys(element, bookData.blobs);
       addImageContainerClass(element);
       // combineImagePairs(element);
       removeSvgDimensions(element);
@@ -53,11 +54,21 @@ function getHtmlWithImageSource(bookData: BooksDbBookData, isPaginated: boolean)
           : new Blob([value], { type: BaseStorageHandler.getImageMimeTypeFromExtension(key) })
       );
       const dummyUrl = buildDummyBookImage(key);
+      const escapedKey = key.replace(/"/g, '&quot;');
+      const imageMarker = `data-ttu-book-image-key="${escapedKey}"`;
 
       objectUrls.push(url);
       urlIndexes.set(url, elementHtml.indexOf(dummyUrl));
 
-      elementHtml = elementHtml.replaceAll(dummyUrl, url).replaceAll(`ttu:${key}`, url);
+      elementHtml = elementHtml
+        .replaceAll(`src="${dummyUrl}"`, `src="${url}" ${imageMarker}`)
+        .replaceAll(`src='${dummyUrl}'`, `src='${url}' ${imageMarker}`)
+        .replaceAll(`href="${dummyUrl}"`, `href="${url}" ${imageMarker}`)
+        .replaceAll(`href='${dummyUrl}'`, `href='${url}' ${imageMarker}`)
+        .replaceAll(`xlink:href="${dummyUrl}"`, `xlink:href="${url}" ${imageMarker}`)
+        .replaceAll(`xlink:href='${dummyUrl}'`, `xlink:href='${url}' ${imageMarker}`)
+        .replaceAll(dummyUrl, url)
+        .replaceAll(`ttu:${key}`, url);
     });
     subscriber.next(elementHtml);
 
@@ -79,6 +90,22 @@ function getHtmlWithImageSource(bookData: BooksDbBookData, isPaginated: boolean)
       objectUrls.forEach((url) => URL.revokeObjectURL(url));
     };
   });
+}
+
+/** Keep the original EPUB blob key on rendered images so the listening mode can
+ * resolve a cloud-stored illustration without depending on a device-local
+ * object URL. */
+function addImageResourceKeys(el: HTMLElement, blobs: Record<string, Blob>) {
+  const images = [...el.querySelectorAll<HTMLElement>('img, svg image')];
+  for (const image of images) {
+    const reference =
+      image.getAttribute('src') ||
+      image.getAttribute('href') ||
+      image.getAttribute('xlink:href') ||
+      '';
+    const key = Object.keys(blobs).find((candidate) => reference.includes(`ttu:${candidate}`));
+    if (key) image.setAttribute('data-ttu-book-image-key', key);
+  }
 }
 
 function addImageContainerClass(el: HTMLElement) {

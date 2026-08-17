@@ -56,6 +56,10 @@
   import { map } from 'rxjs';
   import Fa from 'svelte-fa';
   import { onDestroy } from 'svelte';
+  import type {
+    ListeningOpeningMode,
+    ListeningProgressBar
+  } from '$lib/listening-mode/types';
 
   export let selectedTheme: string;
 
@@ -195,6 +199,20 @@
 
   export let audiobookShortPauseSeconds: number;
 
+  export let audiobookDefaultOpeningMode: ListeningOpeningMode;
+
+  export let audiobookDefaultProgressBar: ListeningProgressBar;
+
+  export let audiobookDefaultShowSentence: boolean;
+
+  export let audiobookDefaultKeepReaderActive: boolean;
+
+  export let audiobookDefaultShowIllustrations: boolean;
+
+  export let audiobookDefaultIllustrationNotification: boolean;
+
+  export let audiobookDefaultSkipSeconds: number;
+
   $: availableThemes = (
     browser
       ? [...Array.from(availableThemesMap.entries()), ...Object.entries($customThemes$)]
@@ -277,6 +295,28 @@
     {
       id: ViewMode.Paginated,
       text: 'Paginated'
+    }
+  ];
+
+  const optionsForListeningOpeningMode: ToggleOption<ListeningOpeningMode>[] = [
+    {
+      id: 'reading',
+      text: 'Reading'
+    },
+    {
+      id: 'listening',
+      text: 'Listening'
+    }
+  ];
+
+  const optionsForListeningProgressBar: ToggleOption<ListeningProgressBar>[] = [
+    {
+      id: 'chapter',
+      text: 'Chapter'
+    },
+    {
+      id: 'book',
+      text: 'Full book'
     }
   ];
 
@@ -985,6 +1025,69 @@
         />
       </SettingsItemGroup>
     {/if}
+  {:else if activeSettings === 'Listening'}
+    <div class="sm:col-span-2 lg:col-span-3 rounded-xl border border-[#90CAF9]/70 bg-[#E3F2FD]/55 px-3 py-2 text-sm">
+      <div class="font-medium">Audiobook listening mode</div>
+      <div class="mt-1 text-xs opacity-65">
+        These are device defaults. A cloud book can override each option independently from its player settings panel; choosing “Inherit” there returns to these values.
+      </div>
+    </div>
+
+    <SettingsItemGroup title="Opening mode">
+      <ButtonToggleGroup
+        options={optionsForListeningOpeningMode}
+        bind:selectedOptionId={audiobookDefaultOpeningMode}
+      />
+    </SettingsItemGroup>
+    <SettingsItemGroup title="Progress bar">
+      <ButtonToggleGroup
+        options={optionsForListeningProgressBar}
+        bind:selectedOptionId={audiobookDefaultProgressBar}
+      />
+    </SettingsItemGroup>
+    <SettingsItemGroup title="Show current sentence">
+      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={audiobookDefaultShowSentence} />
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Keep reader active"
+      tooltip="Keeps the real reader DOM mounted for browser extensions while Listening Mode is open."
+    >
+      <ButtonToggleGroup
+        options={optionsForToggle}
+        bind:selectedOptionId={audiobookDefaultKeepReaderActive}
+      />
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Show illustrations"
+      tooltip="Shows illustrations at their inferred audiobook timeline positions when alignment metadata is available."
+    >
+      <ButtonToggleGroup
+        options={optionsForToggle}
+        bind:selectedOptionId={audiobookDefaultShowIllustrations}
+      />
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Illustration notification sound"
+      tooltip="Plays a short local notification when playback crosses an illustration."
+    >
+      <ButtonToggleGroup
+        options={optionsForToggle}
+        bind:selectedOptionId={audiobookDefaultIllustrationNotification}
+      />
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Skip seconds"
+      tooltip="Default amount used by the Listening Mode rewind/forward buttons. Cloud books can override it per title."
+    >
+      <input
+        type="number"
+        class={inputClasses}
+        min="1"
+        max="120"
+        step="1"
+        bind:value={audiobookDefaultSkipSeconds}
+      />
+    </SettingsItemGroup>
   {:else}
     <div class="sm:col-span-2 lg:col-span-3 rounded-xl border border-[#90CAF9]/70 bg-[#E3F2FD]/55 px-3 py-2 text-sm">
       <div class="font-medium">Cloud audiobook statistics</div>

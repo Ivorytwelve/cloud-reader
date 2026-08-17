@@ -19,6 +19,7 @@ import {
 import { between, interactWithSandbox, toTimeStamp, toTimeString } from './util';
 import { getAudioMetadata, getMediaInfoCover } from './mediaInfo';
 import { getChapterData, initializeFFMPEG, putAudioFileInFFMPEG } from './ffmpeg';
+import { extractMp3Id3Chapters } from './id3-chapters';
 
 import { AudioProcessor } from './settings';
 import type { MediaInfoType } from 'mediainfo.js';
@@ -314,9 +315,14 @@ export async function setAudioContext(
 ) {
 	await putAudioFileInFFMPEG(newAudioFile);
 
-	const audioChapters = await (newAudioFile && !audioResult.chapters.length
-		? getChapterData(newAudioFile)
-		: Promise.resolve(audioResult.chapters));
+	let audioChapters = audioResult.chapters;
+	if (newAudioFile && !audioChapters.length) {
+		// FFmpeg-WASM chapter probing is optional/not always initialized. MP3
+		// chapter metadata is stored in ID3 CHAP frames, so read those directly
+		// first and only fall back to the legacy FFmpeg log parser when needed.
+		audioChapters = await extractMp3Id3Chapters(newAudioFile).catch(() => []);
+		if (!audioChapters.length) audioChapters = await getChapterData(newAudioFile);
+	}
 
 	currentAudioLoaded$.set(false);
 	currentAudioFile$.set(newAudioFile);

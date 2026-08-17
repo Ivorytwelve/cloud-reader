@@ -14,6 +14,7 @@
 	import { AutoPauseMode, ReaderMenuOpenMode } from '../lib/settings';
 	import {
 		activeSubtitle$,
+		audioSeeking$,
 		booksDB$,
 		currentAudioLoaded$,
 		currentAudioSourceUrl$,
@@ -75,6 +76,22 @@
 	function notifyCloudAudiobookUserActivity() {
 		if (!$currentRemoteAudioFileName$) return;
 		document.dispatchEvent(new CustomEvent('ttu-cloud:audiobook-user-activity'));
+	}
+
+	function persistCloudPlaybackRate() {
+		if (!$currentRemoteAudioFileName$) return;
+		notifyCloudAudiobookUserActivity();
+		document.dispatchEvent(
+			new CustomEvent('ttu-cloud:audiobook-progress', {
+				detail: {
+					seconds: $currentTime$ || 0,
+					duration: $duration$ || undefined,
+					playbackRate: $playbackRate$,
+					paused: $paused$,
+				},
+			}),
+		);
+		document.dispatchEvent(new CustomEvent('ttu-cloud:flush-audiobook-progress'));
 	}
 
 	function applyCloudAudiobookPosition(event: Event) {
@@ -262,6 +279,7 @@
 	onMount(() => {
 		document.addEventListener('ttsu:section.change', updateCSSClasses, false);
 		document.addEventListener('ttu-cloud:apply-audiobook-position', applyCloudAudiobookPosition as EventListener);
+		document.addEventListener('ttu-whispersync:scroll-to-current', onScrollToCurrentRequest as EventListener);
 
 		jpdbPopover = document.getElementById('jpdb-popup');
 	});
@@ -269,12 +287,17 @@
 	onDestroy(() => {
 		document.removeEventListener('ttsu:section.change', updateCSSClasses, false);
 		document.removeEventListener('ttu-cloud:apply-audiobook-position', applyCloudAudiobookPosition as EventListener);
+		document.removeEventListener('ttu-whispersync:scroll-to-current', onScrollToCurrentRequest as EventListener);
 
 		yomiObserver.disconnect();
 		dictionaryObserver.disconnect();
 
 		releaseWakeLock();
 	});
+
+	function onScrollToCurrentRequest() {
+		void onScrollToSubtitle();
+	}
 
 	async function onBlur() {
 		if (
@@ -636,6 +659,7 @@
 		const newPlaybackRate = Number.parseFloat(currentTarget.value);
 
 		$playbackRate$ = newPlaybackRate;
+		persistCloudPlaybackRate();
 		playbackRatesPopover.hide();
 	}
 
@@ -989,6 +1013,7 @@
 	function adjustPlaybackRateBy(value: number) {
 		$playbackRate$ = between(0.1, 2, Math.round(($playbackRate$ + value) * 100 + Number.EPSILON) / 100);
 		displayedPlaybackrate = $playbackRate$;
+		persistCloudPlaybackRate();
 	}
 </script>
 
@@ -1004,11 +1029,14 @@
 		bind:playbackRate={$playbackRate$}
 		bind:this={audioElement}
 		on:loadstart={() => {
+			audioSeeking$.set(false);
 			audioMetadataReady = false;
 			dispatch('loadstart');
 		}}
 		on:loadedmetadata={onLoadedMetadata}
 		on:timeupdate={onCurrentTimeChange}
+		on:seeking={() => audioSeeking$.set(true)}
+		on:seeked={() => audioSeeking$.set(false)}
 		on:pause={onCurrentTimeChange}
 		on:playing={requestWakeLock}
 		on:error

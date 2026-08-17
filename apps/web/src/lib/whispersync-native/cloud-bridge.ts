@@ -5,11 +5,12 @@
 import { get } from 'svelte/store';
 import { setAudioContext, setSubtitleContext, updateSubtitles } from '$lib/whispersync-upstream/lib/files';
 import {
-  bookData$,
-  currentAudioSourceUrl$,
-  currentCoverUrl$,
-  currentRemoteAudioFileName$,
-  currentTime$,
+	bookData$,
+	currentAudioSourceUrl$,
+	currentCoverUrl$,
+	currentRemoteAudioFileName$,
+	currentSubtitles$,
+	currentTime$,
   duration$,
   extensionData$,
   lastError$,
@@ -25,6 +26,8 @@ import { activeCloudBookId$, cloudAudiobookTrackingActive$ } from '$lib/cloud/au
 import { AudiobookWriteBuffer, type BufferedAudiobookProgress } from '$lib/cloud/audiobook-write-buffer';
 import { getCloudWriteRetryDelayMs } from '$lib/cloud/cloud-write-throttle';
 import type { CloudAlignmentInfo, CloudBook, CloudProgress } from '$lib/cloud/types';
+import { inferIllustrationTimeline } from '$lib/cloud/illustration-timeline';
+import { activeCloudBook$, setActiveCloudBook } from '$lib/cloud/listening-settings';
 
 const CLOUD_AUDIO_SAVE_INTERVAL_MS = 5_000;
 const CLOUD_AUDIO_RETRY_MIN_MS = 5_000;
@@ -51,8 +54,9 @@ let cloudAudioRetryDelay = CLOUD_AUDIO_RETRY_MIN_MS;
 const cloudAudioWriteBuffer = new AudiobookWriteBuffer();
 
 export async function openCloudAudiobook(api: TtsuCloudApi, book: CloudBook): Promise<void> {
-  activeCloudBookId = book.id;
-  activeCloudBookId$.next(book.id);
+	activeCloudBookId = book.id;
+	activeCloudBookId$.next(book.id);
+	setActiveCloudBook(book);
   activeCloudHasAudio = !!book.assets.audio;
   cloudAudiobookTrackingActive$.next(activeCloudHasAudio);
   resetCloudAudioWriteState();
@@ -114,7 +118,10 @@ export async function openCloudAudiobook(api: TtsuCloudApi, book: CloudBook): Pr
   await setAudioContext(get(currentCoverUrl$), get(currentAudioSourceUrl$), undefined, {
     coverUrl: audioCoverUrl,
     audioSourceUrl: audioUrl,
-    chapters: book.audio?.chapters || []
+		chapters: (book.audio?.chapters || []).map((chapter) => ({
+			...chapter,
+			startText: chapter.startText || ''
+		}))
   });
 
   // Loading the source itself may emit timeupdate/pause events. They are not
@@ -158,7 +165,59 @@ export async function autoOpenCloudAudiobookForLocalBook(localBookId: number): P
   }
 
   await openCloudAudiobook(api, cloudBook);
+
+  // Older cloud books (and books uploaded by Audiobook Center) can already have
+  // a valid Whispersync alignment without the newer illustration timeline
+  // metadata. Infer it once from the aligned local EPUB + loaded subtitles and
+  // publish it back to the manifest. The session gets the inferred timeline
+  // immediately even if the best-effort cloud write is rate-limited.
+  if (cloudBook.assets.audio && cloudBook.alignment && cloudBook.alignment.illustrations === undefined) {
+    void backfillCloudIllustrationTimeline(api, cloudBook, localBookId).catch((error) => {
+      console.warn('Could not backfill cloud illustration timeline', error);
+    });
+  }
+
   return !!(cloudBook.assets.audio || cloudBook.assets.subtitles);
+}
+
+async function backfillCloudIllustrationTimeline(
+  api: TtsuCloudApi,
+  book: CloudBook,
+  localBookId: number
+): Promise<void> {
+  const localBook = get(bookData$);
+  const subtitles = [...get(currentSubtitles$).values()];
+  if (localBook.id !== localBookId || !localBook.elementHtml || !subtitles.length || !book.alignment) {
+    return;
+  }
+
+  const illustrations = inferIllustrationTimeline(localBook.elementHtml, subtitles);
+  const currentActive = get(activeCloudBook$);
+  const optimisticBook: CloudBook = {
+    ...book,
+    alignment: { ...book.alignment, illustrations },
+    ...(currentActive?.id === book.id && currentActive.listeningSettings
+      ? { listeningSettings: currentActive.listeningSettings }
+      : {})
+  };
+  setActiveCloudBook(optimisticBook);
+
+  // Persist even an empty array. In cloud metadata [] means “inference ran and
+  // this EPUB has no timed illustrations”, while undefined means an older book
+  // still needs the one-time backfill.
+  const saved = await api.upsertBook({
+    id: book.id,
+    // Update-only: do not resurrect a book if it was deleted while the
+    // asynchronous illustration inference was running.
+    title: '',
+    alignment: optimisticBook.alignment
+  });
+  const latestActive = get(activeCloudBook$);
+  setActiveCloudBook(
+    latestActive?.id === book.id && latestActive.listeningSettings
+      ? { ...saved, listeningSettings: latestActive.listeningSettings }
+      : saved
+  );
 }
 
 
@@ -168,7 +227,8 @@ function applyAuthoritativeCloudAudiobookProgress(
   reason: 'initial' | 'conflict' | 'revalidation' = 'initial'
 ): void {
   const audiobook = progress?.audiobook;
-  const seconds = Number.isFinite(audiobook?.seconds) ? audiobook.seconds : 0;
+	const rawSeconds = audiobook?.seconds;
+	const seconds = typeof rawSeconds === 'number' && Number.isFinite(rawSeconds) ? rawSeconds : 0;
   const extensionData = get(extensionData$);
 
   cloudAudioUserDirty = false;
@@ -194,7 +254,15 @@ function applyAuthoritativeCloudAudiobookProgress(
     extensionData$.set({ ...extensionData, playbackPosition: seconds });
   }
 
-  if (audiobook?.playbackRate) playbackRate$.set(audiobook.playbackRate);
+  const savedPlaybackRate = audiobook?.playbackRate;
+  if (typeof savedPlaybackRate === 'number' && Number.isFinite(savedPlaybackRate) && savedPlaybackRate > 0) {
+    playbackRate$.set(savedPlaybackRate);
+  } else if (reason === 'initial') {
+    // Playback speed is per-book cloud progress. Older books may not have a
+    // saved rate yet, so never leak the previous book's speed into a newly
+    // opened audiobook.
+    playbackRate$.set(1);
+  }
 
   if (notifyLoadedPlayer && shouldApplyPosition) {
     document.dispatchEvent(
@@ -439,8 +507,9 @@ export async function saveCloudAudiobookProgress(force = false): Promise<void> {
 
 
 export function clearCloudAudiobookSession(): void {
-  activeCloudBookId = undefined;
-  activeCloudBookId$.next(undefined);
+	activeCloudBookId = undefined;
+	activeCloudBookId$.next(undefined);
+	activeCloudBook$.set(undefined);
   resetCloudAudioWriteState();
   cloudAudioWritesArmed = false;
   cloudAudioUserDirty = false;
@@ -652,15 +721,17 @@ async function persistManualAlignment(
     matchedBy: detail.match.matchedBy,
     matchedOn: detail.match.matchedOn,
     matchedLines: detail.match.matchedLines,
-    totalLines: detail.match.totalLines,
-    diffLines: detail.match.diffLines,
-    rate: detail.match.rate
+		totalLines: detail.match.totalLines,
+		diffLines: detail.match.diffLines,
+		rate: detail.match.rate,
+		illustrations: inferIllustrationTimeline(detail.elementHtml, [...get(currentSubtitles$).values()])
   };
   const alignmentFile = new File([detail.elementHtml], 'whispersync-alignment.html', {
     type: 'text/html;charset=utf-8'
   });
   await api.uploadAsset(cloudBookId, 'alignment', alignmentFile);
-  await api.upsertBook({ id: cloudBookId, title: book.title, alignment: match });
+	const saved = await api.upsertBook({ id: cloudBookId, title: book.title, alignment: match });
+	setActiveCloudBook(saved);
   suppressCloudAlignment(cloudBookId, false);
 }
 

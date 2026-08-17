@@ -72,6 +72,9 @@ export const currentAudioChapters$ = writable<AudioChapter[]>([]);
 
 export const currentAudioLoaded$ = writable<boolean>(false);
 
+/** True while the native audio element is performing a seek. */
+export const audioSeeking$ = writable<boolean>(false);
+
 export const canExportToAnki$ = writable<boolean>(false);
 
 export const isAnkiconnectAndroid$ = writable<boolean>(false);
