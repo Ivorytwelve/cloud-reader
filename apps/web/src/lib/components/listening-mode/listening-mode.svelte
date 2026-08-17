@@ -93,13 +93,17 @@
 
   let contentRoot: HTMLDivElement | undefined;
   let mirrorElement: HTMLElement | undefined;
+  let sentenceMirrorBox: HTMLDivElement | undefined;
   let mirrorHasContent = false;
   let contentObserver: MutationObserver | undefined;
   let contentLookupTimer: number | undefined;
   let coverLookupTimer: number | undefined;
   let mirrorFrame: number | undefined;
+  let sentenceFitFrame: number | undefined;
   let localCoverInput: string | Blob | undefined;
   let localCoverUrl = '';
+  let bookBlobsInput: Record<string, Blob> | undefined;
+  let bookBlobCoverUrl = '';
   let renderedWhispersyncCoverUrl = '';
   let artworkFailureVersion = 0;
   const failedArtworkUrls = new Set<string>();
@@ -166,6 +170,7 @@
 
   const settingActions = ['play', 'pause', 'seekbackward', 'seekforward', 'seekto'] as const;
   const progressThumbSizePx = 14;
+  const openingModeCachePrefix = 'ttu-listening-opening-mode-v1:';
   const mirrorVisualStyleProperties = [
     'color',
     'background-color',
@@ -255,10 +260,14 @@
     .map((entry) => `${entry.id}:${entry.triggerSeconds}:${entry.resourceKey || entry.href}`)
     .join('|');
   $: baseArtworkCandidates = uniqueArtworkUrls([
+    // Prefer a real audiobook cover when one exists, then fall back to the
+    // EPUB/book cover. The rendered WhisperSync image is kept last because it
+    // can briefly retain a stale audio-cover URL while audio context changes.
     $currentCoverUrl$,
-    renderedWhispersyncCoverUrl,
     embeddedAudioCoverUrl,
-    localCoverUrl
+    localCoverUrl,
+    bookBlobCoverUrl,
+    renderedWhispersyncCoverUrl
   ]);
   $: baseArtworkUrl = firstWorkingArtwork(baseArtworkCandidates, artworkFailureVersion);
   // An active illustration must render the exact same resource as the lightbox.
@@ -283,6 +292,9 @@
   ].join('|');
   $: sessionReadyForBook = $listeningSessionReady$?.localBookId === localBookId;
   $: hasAudio = Boolean($currentAudioLoaded$ || $currentAudioSourceUrl$);
+  $: if (browser && localBookId > 0 && sessionReadyForBook && $activeCloudBook$) {
+    cacheOpeningMode(localBookId, $activeCloudBook$.listeningSettings?.openingMode);
+  }
   $: if (!speedOpen) speedDraft = formatPlaybackRate($playbackRate$);
   $: if (resolvedSettings.showIllustrations !== previousShowIllustrations) {
     // Turning illustration display on must not resurrect an image that was
@@ -314,13 +326,17 @@
     previousEnabled = enabled;
   }
 
-  // A mode default is intentionally consulted once, when an audiobook is ready
-  // for this local book. Changing the setting while the book is open never
-  // unexpectedly switches the reader's current mode.
+  // Pick an initial mode immediately from local state, then reconcile it once
+  // the audiobook/cloud session for this book is ready. Changing the default
+  // while the book is already open still never switches the current mode.
   $: if (localBookId !== defaultBookKey) {
     defaultBookKey = localBookId;
     defaultModeApplied = false;
-    enabled = false;
+    // Pick the opening mode synchronously. A cached per-book cloud override wins;
+    // otherwise use the local default. This lets a Listening-default book cover
+    // the reader immediately while WhisperSync/cloud attachment finishes.
+    const cachedOpeningMode = readCachedOpeningMode(localBookId);
+    enabled = (cachedOpeningMode ?? localListeningDefaults.openingMode) === 'listening';
     settingsOpen = false;
     readerActionsOpen = false;
     displayedIllustration = undefined;
@@ -361,10 +377,15 @@
   } else if (browser) {
     clearMediaSession();
   }
-  $: if (enabled && (activeSubtitleId || $currentTime$ || resolvedSettings.showSentence)) {
+  $: if (
+    enabled &&
+    mirrorElement &&
+    (activeSubtitleId || $currentTime$ || resolvedSettings.showSentence)
+  ) {
     scheduleMirrorRefresh();
     updateEpubChapterTitleFromActiveLine();
   }
+  $: if (enabled && resolvedSettings.showSentence && sentenceMirrorBox) scheduleSentenceFit();
   $: if (
     $currentAudioFile$ !== embeddedAudioCoverFile ||
     Boolean($currentCoverUrl$) !== embeddedCoverStoreHadCover
@@ -422,6 +443,7 @@
     if (!browser) return;
 
     updateLocalCover();
+    updateBookBlobCoverFallback();
     syncRenderedWhispersyncCover();
     findBookContent();
     const sectionListSubscription = sectionList$.subscribe((sections) => {
@@ -433,8 +455,10 @@
       if (contentLookupTimer) window.clearTimeout(contentLookupTimer);
       if (coverLookupTimer) window.clearTimeout(coverLookupTimer);
       if (mirrorFrame) window.cancelAnimationFrame(mirrorFrame);
+      if (sentenceFitFrame) window.cancelAnimationFrame(sentenceFitFrame);
       contentObserver?.disconnect();
       if (localCoverUrl.startsWith('blob:')) URL.revokeObjectURL(localCoverUrl);
+      revokeBookBlobCover();
       revokeEmbeddedAudioCover();
       clearLocalIllustrationUrls();
       clearMediaSession();
@@ -447,6 +471,40 @@
   });
 
   $: if (bookCover !== localCoverInput) updateLocalCover();
+  $: if (bookBlobs !== bookBlobsInput) updateBookBlobCoverFallback();
+
+  function openingModeCacheKey(bookId: number): string {
+    return `${openingModeCachePrefix}${bookId}`;
+  }
+
+  function readCachedOpeningMode(bookId: number): ListeningOpeningMode | undefined {
+    if (!browser || bookId <= 0) return undefined;
+    try {
+      const value = window.localStorage.getItem(openingModeCacheKey(bookId));
+      if (value === 'reading' || value === 'listening') return value;
+      // `inherit` deliberately resolves through the current local default.
+      if (value === 'inherit') return localListeningDefaults.openingMode;
+    } catch {
+      // Storage can be unavailable in restricted/private contexts. Startup still
+      // falls back cleanly to the device default.
+    }
+    return undefined;
+  }
+
+  function cacheOpeningMode(
+    bookId: number,
+    openingMode: ListeningOpeningMode | null | undefined
+  ): void {
+    if (!browser || bookId <= 0) return;
+    try {
+      window.localStorage.setItem(
+        openingModeCacheKey(bookId),
+        openingMode === 'reading' || openingMode === 'listening' ? openingMode : 'inherit'
+      );
+    } catch {
+      // Best-effort cache only; cloud remains canonical.
+    }
+  }
 
   function setListeningScrollLock(locked: boolean): void {
     if (!browser || locked === listeningScrollLocked) return;
@@ -619,7 +677,45 @@
     if (!browser || bookCover === localCoverInput) return;
     if (localCoverUrl.startsWith('blob:')) URL.revokeObjectURL(localCoverUrl);
     localCoverInput = bookCover;
-    localCoverUrl = bookCover instanceof Blob ? URL.createObjectURL(bookCover) : bookCover || '';
+
+    if (bookCover instanceof Blob) {
+      const matchingKey =
+        Object.entries(bookBlobs).find(([, blob]) => blob === bookCover)?.[0] || 'cover';
+      localCoverUrl = URL.createObjectURL(ensureIllustrationMimeType(bookCover, matchingKey));
+    } else {
+      localCoverUrl = bookCover || '';
+    }
+  }
+
+  function revokeBookBlobCover(): void {
+    if (bookBlobCoverUrl.startsWith('blob:')) URL.revokeObjectURL(bookBlobCoverUrl);
+    bookBlobCoverUrl = '';
+  }
+
+  function updateBookBlobCoverFallback(): void {
+    if (!browser) return;
+    bookBlobsInput = bookBlobs;
+    revokeBookBlobCover();
+
+    // rawBookData.coverImage is the normal path. Some restored/cloud books can
+    // temporarily expose only the EPUB blob map, though, so retain a conservative
+    // filename fallback for the actual book cover instead of showing the generic
+    // Listening Mode placeholder.
+    const candidates = Object.entries(bookBlobs).filter(([key, blob]) => {
+      if (!blob) return false;
+      const cleanKey = normalizeResourceKey(key).toLowerCase();
+      const basename = cleanKey.split('/').pop() || cleanKey;
+      const looksLikeImage =
+        blob.type?.startsWith('image/') ||
+        /\.(?:jpe?g|png|gif|webp|svg|avif|bmp)(?:$|[?#])/i.test(cleanKey);
+      const looksLikeCover =
+        /cover|jacket|hyoushi|front/i.test(basename) || basename.includes('表紙');
+      return looksLikeImage && looksLikeCover;
+    });
+
+    if (!candidates.length) return;
+    const [key, blob] = candidates[0];
+    bookBlobCoverUrl = URL.createObjectURL(ensureIllustrationMimeType(blob, key));
   }
 
   async function refreshEmbeddedAudioCover(file: File | undefined, existingCoverUrl: string) {
@@ -717,11 +813,54 @@
     });
   }
 
+  function scheduleSentenceFit() {
+    if (!browser || !sentenceMirrorBox || sentenceFitFrame) return;
+    sentenceFitFrame = window.requestAnimationFrame(() => {
+      sentenceFitFrame = undefined;
+      fitSentenceMirror();
+    });
+  }
+
+  function fitSentenceMirror() {
+    const box = sentenceMirrorBox;
+    if (!box) return;
+
+    const minimumScale = 0.62;
+    box.style.removeProperty('--listening-sentence-font-size');
+    const baseFontSize = Number.parseFloat(window.getComputedStyle(box).fontSize) || 16;
+    const fits = () =>
+      box.scrollHeight <= box.clientHeight + 1 && box.scrollWidth <= box.clientWidth + 1;
+    const applyScale = (scale: number) =>
+      box.style.setProperty(
+        '--listening-sentence-font-size',
+        `${(baseFontSize * scale).toFixed(2)}px`
+      );
+
+    if (fits()) return;
+    applyScale(minimumScale);
+    if (!fits()) return;
+
+    // Find the largest size that fits. A short binary search avoids doing a long
+    // chain of synchronous layouts for every subtitle change.
+    let low = minimumScale;
+    let high = 1;
+    for (let index = 0; index < 6; index += 1) {
+      const candidate = (low + high) / 2;
+      applyScale(candidate);
+      if (fits()) low = candidate;
+      else high = candidate;
+    }
+    applyScale(low);
+  }
+
   function refreshSentenceMirror() {
     if (!mirrorElement) return;
     while (mirrorElement.firstChild) mirrorElement.removeChild(mirrorElement.firstChild);
     mirrorHasContent = false;
-    if (!enabled || !resolvedSettings.showSentence || !contentRoot) return;
+    if (!enabled || !resolvedSettings.showSentence || !contentRoot) {
+      scheduleSentenceFit();
+      return;
+    }
 
     const id = $activeSubtitle$.current || $activeSubtitle$.previous;
     // Scope the lookup to the real reader. The mirror intentionally keeps the
@@ -740,6 +879,7 @@
       mirrorElement.appendChild(clone);
     }
     mirrorHasContent = mirrorElement.childNodes.length > 0;
+    scheduleSentenceFit();
   }
 
   function cloneSentenceForListening(source: HTMLElement): HTMLElement {
@@ -804,8 +944,27 @@
         ? window.getComputedStyle(sourceElement.parentElement)
         : undefined;
       const target = clones[index];
+      // The Listening sentence owns the base font size so it can shrink to fit,
+      // but preserve relative sizes (ruby/extension annotations) with em values.
+      target.style.setProperty('font-size', 'inherit', 'important');
       for (const property of mirrorVisualStyleProperties) {
         const value = computed.getPropertyValue(property);
+        if (property === 'font-family' && index === 0) {
+          // Font family is normally inherited by every reader line. Comparing it
+          // to the parent used to skip it entirely and made the mirror fall back
+          // to the Listening UI font.
+          if (value.trim()) target.style.setProperty(property, value, 'important');
+          continue;
+        }
+        if (property === 'font-size') {
+          if (index === 0 || !parentComputed) continue;
+          const size = Number.parseFloat(value);
+          const parentSize = Number.parseFloat(parentComputed.getPropertyValue('font-size'));
+          if (Number.isFinite(size) && Number.isFinite(parentSize) && parentSize > 0 && Math.abs(size - parentSize) > 0.1) {
+            target.style.setProperty('font-size', `${size / parentSize}em`, 'important');
+          }
+          continue;
+        }
         if (shouldCopyMirrorStyle(property, value, parentComputed)) {
           target.style.setProperty(property, value, 'important');
         }
@@ -1217,27 +1376,44 @@
     const anchor = chapterAnchorEl.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
-    const edge = 12;
-    const gap = 10;
-    const width = Math.min(416, Math.max(240, viewportWidth - edge * 2));
-    const desiredHeight = Math.min(352, Math.max(180, viewportHeight * 0.46));
-    const belowSpace = Math.max(0, viewportHeight - anchor.bottom - gap - edge);
-    const aboveSpace = Math.max(0, anchor.top - gap - edge);
-    const openBelow = belowSpace >= Math.min(desiredHeight, 220) || belowSpace >= aboveSpace;
+    const isMobile = viewportWidth < 640;
+    const horizontalEdge = isMobile ? 14 : 16;
+    // Keep noticeably more breathing room at the bottom on phones.
+    const verticalEdge = isMobile ? 28 : 18;
+    const gap = isMobile ? 8 : 10;
+    const width = Math.max(160, Math.min(416, viewportWidth - horizontalEdge * 2));
+    const desiredOuterHeight = Math.min(300, Math.max(170, viewportHeight * 0.38));
+    const belowSpace = Math.max(0, viewportHeight - anchor.bottom - gap - verticalEdge);
+    const aboveSpace = Math.max(0, anchor.top - gap - verticalEdge);
+    const openBelow =
+      belowSpace >= Math.min(desiredOuterHeight, 190) || belowSpace >= aboveSpace;
     const available = openBelow ? belowSpace : aboveSpace;
-    const maxHeight = Math.max(120, Math.min(desiredHeight, available));
+    const outerHeight = Math.max(96, Math.min(desiredOuterHeight, available));
+    const innerVerticalChrome = 16; // py-2 on the popup itself
     const center = anchor.left + anchor.width / 2;
-    const halfWidth = width / 2;
+    // `left` is the popup's left edge, not its centre. The previous calculation
+    // clamped a centre coordinate and then assigned it directly to CSS `left`,
+    // which pushed the popup off the right side on narrow screens.
     const left = Math.min(
-      viewportWidth - edge - halfWidth,
-      Math.max(edge + halfWidth, center)
+      viewportWidth - horizontalEdge - width,
+      Math.max(horizontalEdge, center - width / 2)
     );
     const top = openBelow
-      ? Math.min(viewportHeight - edge - maxHeight, anchor.bottom + gap)
-      : Math.max(edge, anchor.top - gap - maxHeight);
+      ? Math.min(viewportHeight - verticalEdge - outerHeight, anchor.bottom + gap)
+      : Math.max(verticalEdge, anchor.top - gap - outerHeight);
 
-    chapterPopoverMaxHeight = maxHeight;
+    chapterPopoverMaxHeight = Math.max(80, outerHeight - innerVerticalChrome);
     chapterPopoverStyle = `left:${left}px;top:${top}px;width:${width}px;`;
+  }
+
+  function scrollChapterPopover(event: WheelEvent): void {
+    const scroller = event.currentTarget as HTMLElement;
+    // The document/book remains scroll-locked in Listening Mode, but the
+    // chapter list is an intentional independent scroll region. Consume the
+    // wheel here so it can never leak through to the EPUB underneath.
+    event.preventDefault();
+    event.stopPropagation();
+    scroller.scrollTop += event.deltaY;
   }
 
   function formatTime(value: number) {
@@ -1346,6 +1522,9 @@
     const parsed: CloudListeningSettingsPatch = {
       [field]: parsedValue
     } as CloudListeningSettingsPatch;
+    if (field === 'openingMode') {
+      cacheOpeningMode(localBookId, parsedValue as ListeningOpeningMode | null);
+    }
     settingsError = '';
     const book = $activeCloudBook$;
     if (!book) return;
@@ -1629,6 +1808,11 @@
     if (event.target === event.currentTarget && lightboxZoom === 1) closeLightbox();
   }
 
+  function onListeningWindowResize() {
+    positionChapterPopover();
+    scheduleSentenceFit();
+  }
+
   function onKeydown(event: KeyboardEvent) {
     if (!enabled) return;
     if (event.key === 'Escape' && lightboxOpen) {
@@ -1658,7 +1842,7 @@
   }
 </script>
 
-<svelte:window on:keydown={onKeydown} on:resize={positionChapterPopover} />
+<svelte:window on:keydown={onKeydown} on:resize={onListeningWindowResize} />
 
 {#if enabled}
   <section
@@ -1736,7 +1920,7 @@
       </header>
 
       {#if settingsOpen}
-        <div class="listening-settings-panel mt-3 rounded-2xl p-4 shadow-xl">
+        <div class="listening-settings-panel rounded-2xl p-4 shadow-xl">
           <div class="mb-3 flex items-center justify-between">
             <h2 class="font-semibold">This book</h2>
             <button
@@ -1938,6 +2122,8 @@
                     <div
                       class="listening-chapter-scroll overflow-y-auto px-2"
                       style={`max-height:${chapterPopoverMaxHeight}px`}
+                      on:wheel|nonpassive|stopPropagation={scrollChapterPopover}
+                      on:touchmove|stopPropagation={() => {}}
                     >
                       {#each chapterList as chapter, index}
                         <button
@@ -1962,13 +2148,16 @@
             {/if}
             {#if resolvedSettings.showSentence}
               <div
-                class="listening-sentence-mirror mt-3 min-h-[3rem] rounded-xl px-3 py-2 text-base leading-relaxed sm:text-xl"
+                class="listening-sentence-mirror mt-3 rounded-xl px-3 py-2"
+                bind:this={sentenceMirrorBox}
                 aria-live="polite"
               >
-                <span class="contents" bind:this={mirrorElement}></span>
-                {#if !mirrorHasContent && currentSentence}
-                  <span>{currentSentence.text}</span>
-                {/if}
+                <div class="listening-sentence-content">
+                  <span class="contents" bind:this={mirrorElement}></span>
+                  {#if !mirrorHasContent && currentSentence}
+                    <span>{currentSentence.text}</span>
+                  {/if}
+                </div>
               </div>
             {/if}
           </div>
@@ -2281,6 +2470,34 @@
     backdrop-filter: blur(18px);
   }
 
+  .listening-settings-panel {
+    position: absolute;
+    z-index: 40;
+    top: 4.25rem;
+    left: 1rem;
+    right: 1rem;
+    max-height: calc(100dvh - 5.25rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  @media (min-width: 640px) {
+    .listening-settings-panel {
+      left: 2rem;
+      right: 2rem;
+    }
+  }
+
+  .listening-chapter-scroll {
+    overflow-y: auto !important;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-gutter: stable;
+    pointer-events: auto;
+  }
+
   .listening-settings-panel label {
     display: flex;
     flex-direction: column;
@@ -2515,8 +2732,44 @@
   }
 
   .listening-sentence-mirror {
+    --listening-sentence-base-font-size: 1rem;
+    /* Stable subtitle slot: sentence length can no longer move the progress or
+       playback controls. Long lines shrink inside this box instead. */
+    box-sizing: border-box;
+    width: 100%;
+    height: 5.25rem;
+    min-height: 5.25rem;
+    max-height: 5.25rem;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     background: rgba(0, 0, 0, 0.22);
     color: rgba(255, 255, 255, 0.92);
+    font-size: var(--listening-sentence-font-size, var(--listening-sentence-base-font-size));
+    line-height: 1.82;
+    text-align: center;
+  }
+
+  .listening-sentence-content {
+    width: 100%;
+    max-width: 100%;
+    max-height: 100%;
+    line-height: inherit;
+    overflow-wrap: anywhere;
+  }
+
+  .listening-sentence-content :global(rt) {
+    line-height: 1;
+  }
+
+  @media (min-width: 640px) {
+    .listening-sentence-mirror {
+      height: 6rem;
+      min-height: 6rem;
+      max-height: 6rem;
+      --listening-sentence-base-font-size: 1.25rem;
+    }
   }
 
   .listening-speed-text {
@@ -2822,6 +3075,10 @@
   :global(.ttu-listening-mirror-line *) {
     writing-mode: horizontal-tb !important;
     text-orientation: mixed !important;
+  }
+
+  :global(.ttu-listening-mirror-line) {
+    line-height: inherit !important;
   }
 
   .listening-reader-actions {
