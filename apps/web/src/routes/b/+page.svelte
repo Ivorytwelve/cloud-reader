@@ -246,6 +246,7 @@
   let listeningModeImportPromise: Promise<void> | undefined;
   let listeningModeImportCancelled = false;
   const listeningOpeningModeCachePrefix = 'ttu-listening-opening-mode-v1:';
+  const listeningScrollbarSuppressionClass = 'ttu-listening-scrollbars-hidden';
 
   const syncedPromise = new Promise<void>((resolver) => {
     syncedResolver = resolver;
@@ -303,6 +304,16 @@
     if (listeningStartupRequested) ensureListeningModeComponent();
   }
   $: hasListeningAudio = $listeningAudioAvailable$;
+  $: if (browser) {
+    // Hide only the browser chrome for the underlying reader while Listening
+    // Mode covers it. Do not change overflow: the real reader must remain
+    // scrollable so Whispersync can advance it and normal position saving fires.
+    document.documentElement.classList.toggle(
+      listeningScrollbarSuppressionClass,
+      listeningModeActive
+    );
+    document.body?.classList.toggle(listeningScrollbarSuppressionClass, listeningModeActive);
+  }
   $: if (
     listeningModeActive &&
     $listeningSessionReady$?.localBookId === currentWhispersyncBookId &&
@@ -690,6 +701,8 @@
     if (browser) {
       void saveCurrentCloudReaderProgress(true);
       document.removeEventListener('ttu-action', handleAction, false);
+      document.documentElement.classList.remove(listeningScrollbarSuppressionClass);
+      document.body?.classList.remove(listeningScrollbarSuppressionClass);
       document.documentElement.lang = 'ja';
     }
 
@@ -2106,3 +2119,20 @@
     }
   }}
 />
+
+<style>
+  /* Visual-only suppression: keeps the root scroller fully operational while
+     preventing the hidden reader's scrollbar from showing through Listening Mode. */
+  :global(html.ttu-listening-scrollbars-hidden),
+  :global(html.ttu-listening-scrollbars-hidden body) {
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+  }
+
+  :global(html.ttu-listening-scrollbars-hidden::-webkit-scrollbar),
+  :global(html.ttu-listening-scrollbars-hidden body::-webkit-scrollbar) {
+    width: 0 !important;
+    height: 0 !important;
+    display: none !important;
+  }
+</style>
