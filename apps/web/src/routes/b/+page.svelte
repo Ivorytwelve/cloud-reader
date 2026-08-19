@@ -40,6 +40,7 @@
   import MessageDialog from '$lib/components/message-dialog.svelte';
   import StyleSheetRenderer from '$lib/components/style-sheet-renderer.svelte';
   import {
+    audiobookDefaultOpeningMode$,
     autoBookmark$,
     autoBookmarkTime$,
     autoPositionOnResize$,
@@ -179,7 +180,7 @@
   import { onDestroy, onMount, tick } from 'svelte';
   import Fa from 'svelte-fa';
   import NativeWhispersync from '$lib/whispersync-native/native-whispersync.svelte';
-  import { listeningAudioAvailable$ } from '$lib/listening-mode/session-state';
+  import { listeningAudioAvailable$, listeningSessionReady$ } from '$lib/listening-mode/session-state';
   import {
     hydrateLinkedCloudReaderProgress,
     saveLinkedCloudReaderProgress
@@ -240,6 +241,11 @@
   let listeningModeActive = false;
   let hasListeningAudio = false;
   let ListeningModeComponent: any;
+  let listeningStartupBookKey = 0;
+  let listeningStartupRequested = false;
+  let listeningModeImportPromise: Promise<void> | undefined;
+  let listeningModeImportCancelled = false;
+  const listeningOpeningModeCachePrefix = 'ttu-listening-opening-mode-v1:';
 
   const syncedPromise = new Promise<void>((resolver) => {
     syncedResolver = resolver;
@@ -253,9 +259,57 @@
     .join(', ');
   const verticalTextOrientation = $verticalMode$ ? $verticalTextOrientation$ : '';
 
+  function shouldStartInListeningMode(bookId: number): boolean {
+    if (!browser || bookId <= 0) return false;
+    let openingMode = $audiobookDefaultOpeningMode$;
+    try {
+      const cachedMode = window.localStorage.getItem(`${listeningOpeningModeCachePrefix}${bookId}`);
+      if (cachedMode === 'reading' || cachedMode === 'listening') openingMode = cachedMode;
+      // "inherit" deliberately keeps the current local default.
+    } catch {
+      // localStorage can be unavailable in hardened/private browser contexts.
+    }
+    return openingMode === 'listening';
+  }
+
+  function ensureListeningModeComponent(): void {
+    if (!browser || ListeningModeComponent || listeningModeImportPromise) return;
+    listeningModeImportPromise = import('$lib/components/listening-mode/listening-mode.svelte')
+      .then((module) => {
+        if (!listeningModeImportCancelled) ListeningModeComponent = module.default;
+      })
+      .catch((error) => {
+        logger.warn(
+          `Listening Mode failed to load: ${error instanceof Error ? error.message : String(error)}`
+        );
+        // Never strand the user behind the startup curtain if the chunk fails.
+        listeningStartupRequested = false;
+        listeningModeActive = false;
+      })
+      .finally(() => {
+        listeningModeImportPromise = undefined;
+      });
+  }
+
   $: currentWhispersyncBookId = browser ? Number($page.url.searchParams.get('id') || 0) : 0;
+  $: if (
+    browser &&
+    currentWhispersyncBookId > 0 &&
+    currentWhispersyncBookId !== listeningStartupBookKey
+  ) {
+    listeningStartupBookKey = currentWhispersyncBookId;
+    listeningStartupRequested = shouldStartInListeningMode(currentWhispersyncBookId);
+    listeningModeActive = listeningStartupRequested;
+    if (listeningStartupRequested) ensureListeningModeComponent();
+  }
   $: hasListeningAudio = $listeningAudioAvailable$;
-  $: if (listeningModeActive && !hasListeningAudio) listeningModeActive = false;
+  $: if (
+    listeningModeActive &&
+    $listeningSessionReady$?.localBookId === currentWhispersyncBookId &&
+    !hasListeningAudio
+  ) {
+    listeningModeActive = false;
+  }
 
   const bookId$ = iffBrowser(() => readableToObservable(page)).pipe(
     map((pageObj) => Number(pageObj.url.searchParams.get('id'))),
@@ -594,10 +648,10 @@
   }
 
   onMount(() => {
-    let cancelled = false;
-    void import('$lib/components/listening-mode/listening-mode.svelte').then((module) => {
-      if (!cancelled) ListeningModeComponent = module.default;
-    });
+    listeningModeImportCancelled = false;
+    // Reading Mode keeps the same post-mount lazy load as before. If the local
+    // opening-mode prediction was Listening, this import has already started.
+    ensureListeningModeComponent();
 
     document.addEventListener('ttu-action', handleAction, false);
     cloudReaderAutosaveNotBefore = Date.now() + 8000;
@@ -606,7 +660,7 @@
     window.addEventListener('pagehide', onPageHide);
 
     return () => {
-      cancelled = true;
+      listeningModeImportCancelled = true;
       window.removeEventListener('pagehide', onPageHide);
     };
   });
@@ -1788,6 +1842,19 @@
     />
   {/if}
   <StyleSheetRenderer styleSheet={$bookData$.styleSheet} />
+  {#if listeningStartupRequested && !ListeningModeComponent}
+    <!--
+      Keep the real reader mounted and fully operational, but do not expose its
+      first paint while the lazily-loaded Listening Mode chunk is arriving.
+      The Listening shell uses z-50, so this z-40 curtain disappears in the same
+      render that mounts the shell and can never cover the player itself.
+    -->
+    <div
+      class="writing-horizontal-tb fixed inset-0 z-40"
+      style="background: #1c1e30"
+      aria-hidden="true"
+    ></div>
+  {/if}
   <BookReader
     htmlContent={$bookData$.htmlContent}
     width={$containerViewportWidth$ ?? 0}

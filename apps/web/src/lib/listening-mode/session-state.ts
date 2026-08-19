@@ -11,3 +11,6 @@ export const listeningSessionReady$ = writable<{ localBookId: number } | undefin
 
 /** Browser-safe mirror of whether Whispersync currently owns an audiobook source. */
 export const listeningAudioAvailable$ = writable(false);
+
+/** True only while the Listening Mode overlay is actively controlling the reader. */
+export const listeningModeActive$ = writable(false);

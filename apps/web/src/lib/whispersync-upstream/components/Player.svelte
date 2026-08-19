@@ -65,6 +65,7 @@
 	import Popover from './Popover.svelte';
 	import Progress from './Progress.svelte';
 	import { createEventDispatcher, getContext, onDestroy, onMount, tick } from 'svelte';
+	import { listeningModeActive$ } from '$lib/listening-mode/session-state';
 
 	export let imageLoaded: () => void;
 
@@ -137,17 +138,16 @@
 		return stopRecording(kbps, canceled);
 	}
 
-	export async function onScrollToSubtitle() {
-		if ($isRecording$ || !$readerEnableAutoScroll$) {
+	export async function onScrollToSubtitle(force = false, prioritizedSubtitle?: Subtitle) {
+		if ($isRecording$ || (!force && !$readerEnableAutoScroll$)) {
 			return;
 		}
 
-		let targetSubtitle = $currentSubtitles$.get($activeSubtitle$.current || $activeSubtitle$.previous);
+		let targetSubtitle =
+			prioritizedSubtitle || $currentSubtitles$.get($activeSubtitle$.current || $activeSubtitle$.previous);
 
 		if (!targetSubtitle) {
-			const subtitles = [...$currentSubtitles$.values()];
-
-			targetSubtitle = subtitles.findLast((subtitle) => $currentTime$ >= subtitle.startSeconds);
+			targetSubtitle = getSubtitleAtTime($currentTime$);
 		}
 
 		if (!targetSubtitle) {
@@ -204,6 +204,24 @@
 		exportAudioBitrate$,
 		keybindingsEnableTimeFallback$,
 	} = settings$;
+
+	function getSubtitleAtTime(time: number): Subtitle | undefined {
+		const subtitles = [...$currentSubtitles$.values()];
+		return (
+			subtitles.findLast(
+				(subtitle) => time >= subtitle.startSeconds && time <= subtitle.endSeconds,
+			) || subtitles.findLast((subtitle) => time >= subtitle.startSeconds)
+		);
+	}
+
+	function shouldAutoFollowReader(): boolean {
+		// Listening Mode must keep the real reader underneath in step with playback
+		// so its normal bookmark/progress machinery sees genuine reader movement.
+		// Reading Mode keeps the original Auto Scroll preference. Paused audio never
+		// owns the reader position in either mode.
+		return !$paused$ && ($listeningModeActive$ || $readerEnableAutoScroll$);
+	}
+
 	const { isIOS } = getContext<Context>('context');
 	const statisticsEnabled = !!+`${window.localStorage.getItem('statisticsEnabled') || '0'}`;
 	const yomiObserver = new MutationObserver(handleYomiMutation);
@@ -224,6 +242,7 @@
 	let originalCurrentTime = -1;
 	let originalPlaybackRate = -1;
 	let skipNextCue = false;
+	let forceTimeDerivedHighlightUntil = 0;
 	let originalMuted: boolean | undefined;
 	let displayedPlaybackrate = $playbackRate$;
 	let recorderSuccess: undefined | ((audioBuffer: ArrayBuffer | undefined) => void);
@@ -296,7 +315,20 @@
 	});
 
 	function onScrollToCurrentRequest() {
-		void onScrollToSubtitle();
+		const targetSubtitle = getSubtitleAtTime($currentTime$);
+		if (!targetSubtitle) {
+			void onScrollToSubtitle(true);
+			return;
+		}
+
+		// The HTML text track can report the cue from the frame before the Listening
+		// overlay disappeared. For a short transition window, derive the visible
+		// highlight from the authoritative audio clock instead. This also ensures the
+		// one explicit Listening -> Reading jump targets the same sentence the user
+		// was actually hearing.
+		forceTimeDerivedHighlightUntil = Date.now() + 1000;
+		applyActiveCueIds([targetSubtitle.id]);
+		void onScrollToSubtitle(true, targetSubtitle);
 	}
 
 	async function onBlur() {
@@ -864,7 +896,7 @@
 
 		updateCSSClasses(id);
 
-		if (originalCurrentTime === -1 && $readerEnableAutoScroll$ && !skipNextCue) {
+		if (originalCurrentTime === -1 && shouldAutoFollowReader() && !skipNextCue) {
 			document.dispatchEvent(
 				new CustomEvent('ttu-action', {
 					detail: {
@@ -895,9 +927,19 @@
 
 		const activeTrack = [...audioElement.textTracks].findLast((track) => track.mode !== 'disabled');
 
-		let activeCues = [...(activeTrack?.activeCues || [])].map((cue) => cue.id);
+		const timeDerivedSubtitle =
+			Date.now() < forceTimeDerivedHighlightUntil ? getSubtitleAtTime($currentTime$) : undefined;
+		let activeCues = timeDerivedSubtitle
+			? [timeDerivedSubtitle.id]
+			: [...(activeTrack?.activeCues || [])].map((cue) => cue.id);
 
-		if (activeTrack && !activeCues.length && typeof lastActiveId === 'string' && isIOS) {
+		if (
+			!timeDerivedSubtitle &&
+			activeTrack &&
+			!activeCues.length &&
+			typeof lastActiveId === 'string' &&
+			isIOS
+		) {
 			const fallbackId =
 				[...$currentSubtitles$.values()].findLast((subtitle) => $currentTime$ >= subtitle.startSeconds)?.id ||
 				'';
@@ -919,6 +961,10 @@
 			}
 		}
 
+		applyActiveCueIds(activeCues);
+	}
+
+	function applyActiveCueIds(activeCues: string[]) {
 		for (const activeCue of activeCues) {
 			decorateLineHighlightForId(activeCue);
 		}
@@ -935,7 +981,7 @@
 			const element = elements[index];
 			const id = getSubtitleIdFromElement(element);
 
-			if (id !== 'not existing' && activeCues.find((activeCue) => activeCue === id)) {
+			if (id !== 'not existing' && activeCues.includes(id)) {
 				element.classList.add('active');
 			} else {
 				element.classList.remove('active');

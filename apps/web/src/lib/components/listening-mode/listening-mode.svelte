@@ -70,7 +70,7 @@
     ListeningProgressBar
   } from '$lib/listening-mode/types';
   import { resolveListeningSettings } from '$lib/listening-mode/types';
-  import { listeningSessionReady$ } from '$lib/listening-mode/session-state';
+  import { listeningModeActive$, listeningSessionReady$ } from '$lib/listening-mode/session-state';
 
   export let enabled = false;
   export let localBookId = 0;
@@ -163,11 +163,6 @@
   let pinchStartPanX = 0;
   let pinchStartPanY = 0;
   const localIllustrationUrls = new Map<string, string>();
-  let listeningScrollLocked = false;
-  let previousDocumentOverflow = '';
-  let previousBodyOverflow = '';
-  let previousDocumentOverscroll = '';
-  let previousBodyOverscroll = '';
   let epubSectionData: Section[] = [];
   let epubChapterTitle = '';
 
@@ -312,7 +307,7 @@
     previousPlaybackTime = $currentTime$;
   }
   $: if (enabled !== previousEnabled) {
-    setListeningScrollLock(enabled);
+    listeningModeActive$.set(enabled);
     if (enabled) {
       // Entering Listening Mode at an arbitrary position is not an illustration
       // event. Arm the next future image without showing a past one.
@@ -471,7 +466,7 @@
   });
 
   onDestroy(() => {
-    setListeningScrollLock(false);
+    listeningModeActive$.set(false);
     if (contentRoot) contentRoot.classList.remove('ttu-listening-reader-muted');
   });
 
@@ -511,27 +506,9 @@
     }
   }
 
-  function setListeningScrollLock(locked: boolean): void {
-    if (!browser || locked === listeningScrollLocked) return;
-    const root = document.documentElement;
-    const body = document.body;
-    if (locked) {
-      previousDocumentOverflow = root.style.overflow;
-      previousBodyOverflow = body.style.overflow;
-      previousDocumentOverscroll = root.style.overscrollBehavior;
-      previousBodyOverscroll = body.style.overscrollBehavior;
-      root.style.overflow = 'hidden';
-      body.style.overflow = 'hidden';
-      root.style.overscrollBehavior = 'none';
-      body.style.overscrollBehavior = 'none';
-    } else {
-      root.style.overflow = previousDocumentOverflow;
-      body.style.overflow = previousBodyOverflow;
-      root.style.overscrollBehavior = previousDocumentOverscroll;
-      body.style.overscrollBehavior = previousBodyOverscroll;
-    }
-    listeningScrollLocked = locked;
-  }
+  // The fixed Listening overlay owns its own overflow. Do not lock html/body:
+  // the real reader underneath must remain free to follow playback and emit its
+  // normal position/progress updates.
 
   function updateEpubChapterTitleFromActiveLine(): void {
     if (!contentRoot || !epubSectionData.length) {
