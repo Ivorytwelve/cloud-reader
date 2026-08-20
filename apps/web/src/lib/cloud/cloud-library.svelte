@@ -15,6 +15,7 @@
   import { inferIllustrationTimeline } from './illustration-timeline';
   import { applyRemoteReaderProgress, ensureCloudBookLocal } from './local-library';
   import { clearCloudProgressSession, seedCloudProgressSession } from './progress-session';
+  import { flushPendingCloudStatistics } from './cloud-statistics';
   import type { CloudAlignmentInfo, CloudBook, CloudLibrarySnapshot, CloudProgress, CloudQuotaStatus, LibraryManifest } from './types';
   import { cloudAddRequest$, cloudRefreshRequest$, cloudSort$, type CloudSortState } from './ui-state';
   import {
@@ -534,6 +535,104 @@
     }
   }
 
+  function hasFinishedBookFiles(book: CloudBook): boolean {
+    return Boolean(
+      book.assets.epub ||
+        book.assets.audio ||
+        book.assets.subtitles ||
+        book.assets.alignment ||
+        book.assets.audioCover
+    );
+  }
+
+  function isArchivedHistoryBook(book: CloudBook): boolean {
+    return book.shelf === 'history' && !hasFinishedBookFiles(book);
+  }
+
+  async function archiveFinishedBook(book: CloudBook) {
+    if (!api || loading || book.shelf !== 'history') return;
+    if (!hasFinishedBookFiles(book)) {
+      await deleteCloudBook(book);
+      return;
+    }
+
+    if (
+      !confirm(
+        `Free the cloud storage used by “${book.title}”?\n\n` +
+          'The Finished entry, cover and reading statistics are kept. ' +
+          'The EPUB, audiobook, subtitles, alignment and resume progress are removed.'
+      )
+    ) {
+      return;
+    }
+
+    loading = true;
+    error = '';
+    status = `Archiving ${book.title}…`;
+
+    try {
+      // Save the final per-device statistics while the book still exists. A
+      // failed flush aborts before the destructive delete/recreate sequence.
+      status = `Saving final statistics for ${book.title}…`;
+      await flushPendingCloudStatistics();
+
+      // Back up the only binary asset we intentionally keep before the existing
+      // full-delete endpoint removes the book and its heavy files. If the cover
+      // cannot be read, abort before deleting anything.
+      let preservedCover: File | undefined;
+      const coverAsset = book.assets.cover;
+      if (coverAsset) {
+        status = `Preserving ${book.title} cover…`;
+        const coverBlob = await api.fetchAsset(book.id, 'cover');
+        preservedCover = new File([coverBlob], coverAsset.fileName || 'cover', {
+          type: coverAsset.contentType || coverBlob.type || 'application/octet-stream'
+        });
+      }
+
+      // The archive sequence needs one write for delete, one for recreating
+      // metadata, and two for the small direct cover upload. Refuse to start a
+      // destructive sequence if today's Worker budget cannot finish it.
+      const freshQuota = await api.getQuota();
+      const writesNeeded = preservedCover ? 4 : 2;
+      const writesRemaining = Math.max(
+        0,
+        freshQuota.budgets.maxWritesPerDay - freshQuota.budgets.writesToday
+      );
+      if (writesRemaining < writesNeeded) {
+        throw new Error(
+          `Not enough cloud write budget to archive safely (${writesRemaining} remaining, ${writesNeeded} needed).`
+        );
+      }
+
+      status = `Freeing ${book.title} cloud storage…`;
+      await api.deleteBook(book.id);
+      unlinkCloudBook(book.id);
+      clearCloudProgressSession(book.id);
+
+      // Recreate the same cloud ID as a tiny history-only record. Statistics are
+      // stored separately and therefore remain attached to this same book ID.
+      await api.upsertBook({
+        id: book.id,
+        title: book.title,
+        author: book.author,
+        shelf: 'history',
+        finishedAt: book.finishedAt || Date.now()
+      });
+
+      if (preservedCover) {
+        status = `Restoring ${book.title} cover…`;
+        await api.uploadAsset(book.id, 'cover', preservedCover);
+      }
+
+      await refreshAfterMutation();
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      status = '';
+      loading = false;
+    }
+  }
+
   async function moveToHistory(book: CloudBook) {
     if (!api || loading) return;
     loading = true;
@@ -977,7 +1076,12 @@
         >
           {#each historyBooks as book (book.id)}
             <article class="cloud-book-card group relative flex-none">
-              <button class="cloud-book-button block w-full text-left" on:click={() => void openCloudBook(book)} disabled={loading} title={`Open ${book.title}`}>
+              <button
+                class="cloud-book-button block w-full text-left"
+                on:click={() => void openCloudBook(book)}
+                disabled={loading || isArchivedHistoryBook(book)}
+                title={isArchivedHistoryBook(book) ? `${book.title} · files archived` : `Open ${book.title}`}
+              >
                 <div class="relative aspect-[2/3] bg-[#F8FAFC]">
                   {#if coverUrlByBook.get(book.id)}
                     <img
@@ -992,7 +1096,9 @@
                   {:else}
                     <div class="flex h-full items-center justify-center text-4xl opacity-25"><Fa icon={faCloud} /></div>
                   {/if}
-                  <span class="absolute bottom-2 left-2 rounded-lg bg-black/65 px-2 py-1 text-[0.65rem] text-white">Read</span>
+                  <span class="absolute bottom-2 left-2 rounded-lg bg-black/65 px-2 py-1 text-[0.65rem] text-white">
+                    {isArchivedHistoryBook(book) ? 'Archived' : 'Read'}
+                  </span>
                 </div>
                 <div class="cloud-book-info p-2.5">
                   <div class="line-clamp-2 min-h-[2.5rem] text-sm font-medium">{book.title}</div>
@@ -1001,20 +1107,24 @@
               </button>
 
               <div class="absolute right-1.5 top-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                {#if !isArchivedHistoryBook(book)}
+                  <button
+                    class="rounded-lg bg-black/60 p-1.5 text-xs text-white hover:bg-black/75"
+                    title="Return to library"
+                    aria-label={`Return ${book.title} to library`}
+                    on:click|stopPropagation={() => void restoreFromHistory(book)}
+                    disabled={loading}
+                  >
+                    <Fa icon={faRotate} />
+                  </button>
+                {/if}
                 <button
                   class="rounded-lg bg-black/60 p-1.5 text-xs text-white hover:bg-black/75"
-                  title="Return to library"
-                  aria-label={`Return ${book.title} to library`}
-                  on:click|stopPropagation={() => void restoreFromHistory(book)}
-                  disabled={loading}
-                >
-                  <Fa icon={faRotate} />
-                </button>
-                <button
-                  class="rounded-lg bg-black/60 p-1.5 text-xs text-white hover:bg-black/75"
-                  title="Delete from cloud"
-                  aria-label={`Delete ${book.title} from cloud`}
-                  on:click|stopPropagation={() => void deleteCloudBook(book)}
+                  title={hasFinishedBookFiles(book) ? 'Free cloud storage' : 'Remove from cloud library'}
+                  aria-label={hasFinishedBookFiles(book)
+                    ? `Free cloud storage for ${book.title}`
+                    : `Remove ${book.title} from cloud library`}
+                  on:click|stopPropagation={() => void archiveFinishedBook(book)}
                   disabled={loading}
                 >
                   <Fa icon={faTrash} />

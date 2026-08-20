@@ -92,6 +92,14 @@ export function secondsToMinutes(seconds: number) {
   return Math.floor((seconds / 60 + Number.EPSILON) * 100) / 100;
 }
 
+export function formatReadingDuration(seconds: number) {
+  const totalMinutes = Math.max(0, Math.round((Number(seconds) || 0) / 60));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  return hours ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
 export function getDateString(date: Date) {
   return `${date.getFullYear()}-${`${date.getMonth() + 1}`.padStart(
     2,

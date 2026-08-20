@@ -38,7 +38,7 @@
     lastStatisticsSummarySortDirection$,
     lastStatisticsSummarySortProperty$
   } from '$lib/data/store';
-  import { getNumberFromObject, secondsToMinutes } from '$lib/functions/statistic-util';
+  import { formatReadingDuration, getNumberFromObject } from '$lib/functions/statistic-util';
   import { reduceToEmptyString } from '$lib/functions/rxjs/reduce-to-empty-string';
   import { convertRemToPixels, dummyFn, getFullHeight, limitToRange } from '$lib/functions/utils';
   import { debounceTime, fromEvent, tap } from 'rxjs';
@@ -495,13 +495,13 @@
             class:blur={$lastBlurredTrackerItems$.has('readingTime')}
             on:click={(event) => {
               statisticsSummaryPopoverDetails = [
-                `Time: ${secondsToMinutes(currentStatisticsSummaryRow.readingTime)} min`,
-                `Average Time: ${secondsToMinutes(
+                `Time: ${formatReadingDuration(currentStatisticsSummaryRow.readingTime)}`,
+                `Average Time: ${formatReadingDuration(
                   currentStatisticsSummaryRow.averageReadingTime
-                )} min`,
-                `Weighted Time: ${secondsToMinutes(
+                )}`,
+                `Weighted Time: ${formatReadingDuration(
                   currentStatisticsSummaryRow.averageWeightedReadingTime
-                )} min`
+                )}`
               ];
 
               tick().then(() => {
@@ -511,9 +511,9 @@
               });
             }}
           >
-            {secondsToMinutes(
+            {formatReadingDuration(
               getNumberFromObject(currentStatisticsSummaryRow, $lastReadingTimeDataSource$)
-            )} min
+            )}
           </button>
         {/if}
         {#if currentRowInEdit}

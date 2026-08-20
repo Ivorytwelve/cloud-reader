@@ -105,6 +105,26 @@ export function hasDirtyCloudStatistics(storage: Storage = localStorage): boolea
   return Object.keys(loadDirtyMap(storage)).length > 0;
 }
 
+export function discardCloudStatisticSnapshot(
+  key: string,
+  storage: Storage = localStorage
+): void {
+  const contributions = loadCloudStatisticContributions(storage);
+  const dirty = loadDirtyMap(storage);
+  let changed = false;
+
+  if (key in contributions) {
+    delete contributions[key];
+    saveCloudStatisticContributions(contributions, storage);
+    changed = true;
+  }
+  if (key in dirty) {
+    delete dirty[key];
+    changed = true;
+  }
+  if (changed) saveDirtyMap(dirty, storage);
+}
+
 export function cloudStatisticFingerprint(snapshot: CloudStatisticSnapshot): string {
   // JSON.stringify is deterministic for this object because all snapshots are
   // produced by our own literal construction with stable property order.

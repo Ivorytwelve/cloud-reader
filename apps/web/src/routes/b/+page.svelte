@@ -840,7 +840,7 @@
 
     try {
       if (diffToComplete) {
-        const [hadError] = await trackerElm.processStatistics(diffToComplete);
+        const [hadError] = await trackerElm.processStatistics(diffToComplete, 0);
 
         if (hadError) {
           throw new Error('Character Update failed');

@@ -3107,9 +3107,11 @@
   }
 
   :global(.ttu-listening-reader-muted) {
+    /* Keep the real reader laid out and observable underneath the fixed player.
+       visibility:hidden can suppress browser/observer-driven position updates on
+       mobile, which in turn makes audiobook character statistics lag or vanish. */
     opacity: 0 !important;
     pointer-events: none !important;
-    visibility: hidden !important;
   }
 
   :global(.ttu-listening-mirror-line),

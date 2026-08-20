@@ -223,10 +223,11 @@ function sanitizeStatisticSnapshot(
     bookId,
     title,
     dateKey,
-    // Device contributions may be negative after an undo/backward seek. The
-    // cloud aggregate is clamped to >= 0 after all devices are summed.
-    readingTime: sanitizeFiniteNumber(input.readingTime),
-    charactersRead: sanitizeFiniteNumber(input.charactersRead),
+    // Per-device snapshots may correct their own previous contribution, but
+    // they must never go below zero and subtract another device's statistics.
+    // Intentional aggregate edits use the separate _manual snapshot path below.
+    readingTime: Math.max(0, sanitizeFiniteNumber(input.readingTime)),
+    charactersRead: Math.max(0, sanitizeFiniteNumber(input.charactersRead)),
     lastStatisticModified: Math.max(0, Math.floor(sanitizeFiniteNumber(input.lastStatisticModified, Date.now()))),
     ...(completedBook ? { completedBook } : {}),
     ...(input.clearCompletion ? { clearCompletion: true } : {}),
@@ -243,7 +244,9 @@ async function readStatisticSnapshots(env: Env): Promise<CloudStatisticSnapshot[
     cursor = result.truncated ? result.cursor : undefined;
   } while (cursor && keys.length < 10_000);
 
-  if (keys.length > 10_000) throw new HttpError(413, { error: 'Too many statistic snapshots' });
+  // If we hit the cap while R2 still has another page, returning the first
+  // 10,000 objects would silently produce an incomplete aggregate.
+  if (cursor || keys.length > 10_000) throw new HttpError(413, { error: 'Too many statistic snapshots' });
   await consumeBudget(env, 'read', Math.max(1, Math.ceil(keys.length / 25)));
 
   const snapshots: CloudStatisticSnapshot[] = [];
@@ -260,7 +263,10 @@ async function readStatisticSnapshots(env: Env): Promise<CloudStatisticSnapshot[
 
 function aggregateStatisticSnapshots(snapshots: CloudStatisticSnapshot[]): CloudStatisticAggregate[] {
   const aggregates = new Map<string, CloudStatisticAggregate>();
-  const completionCleared = new Set<string>();
+  const completionState = new Map<
+    string,
+    { modifiedAt: number; completedBook?: 1; completedData?: CloudStatisticSnapshot['completedData']; cleared?: boolean }
+  >();
 
   for (const snapshot of snapshots) {
     const key = `${snapshot.bookId}\u0000${snapshot.dateKey}`;
@@ -285,17 +291,29 @@ function aggregateStatisticSnapshots(snapshots: CloudStatisticSnapshot[]): Cloud
     aggregate.readingTime += snapshot.readingTime;
     aggregate.charactersRead += snapshot.charactersRead;
     aggregate.lastStatisticModified = Math.max(aggregate.lastStatisticModified, snapshot.lastStatisticModified);
-    if (snapshot.clearCompletion) completionCleared.add(key);
-    if (snapshot.completedBook) aggregate.completedBook = 1;
-    if (snapshot.completedData && snapshot.lastStatisticModified >= aggregate.lastStatisticModified) {
-      aggregate.completedData = snapshot.completedData;
+
+    if (snapshot.clearCompletion || snapshot.completedBook || snapshot.completedData) {
+      const previousCompletion = completionState.get(key);
+      if (!previousCompletion || snapshot.lastStatisticModified >= previousCompletion.modifiedAt) {
+        completionState.set(key, snapshot.clearCompletion
+          ? { modifiedAt: snapshot.lastStatisticModified, cleared: true }
+          : {
+              modifiedAt: snapshot.lastStatisticModified,
+              ...(snapshot.completedBook ? { completedBook: 1 as const } : {}),
+              ...(snapshot.completedData ? { completedData: snapshot.completedData } : {})
+            });
+      }
     }
   }
 
   for (const [key, aggregate] of aggregates.entries()) {
-    if (completionCleared.has(key)) {
+    const completion = completionState.get(key);
+    if (completion?.cleared) {
       delete aggregate.completedBook;
       delete aggregate.completedData;
+    } else if (completion) {
+      if (completion.completedBook) aggregate.completedBook = 1;
+      if (completion.completedData) aggregate.completedData = completion.completedData;
     }
     aggregate.readingTime = Math.max(0, Math.round(aggregate.readingTime * 1000) / 1000);
     aggregate.charactersRead = Math.max(0, Math.round(aggregate.charactersRead));

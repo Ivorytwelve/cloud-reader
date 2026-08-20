@@ -10,6 +10,7 @@ import type { CloudStatisticAggregate, CloudStatisticSnapshot } from './types';
 import {
   acknowledgeCloudStatisticSnapshot,
   cloudStatisticSnapshotKey,
+  discardCloudStatisticSnapshot,
   getDirtyCloudStatisticSnapshots,
   hasDirtyCloudStatistics,
   loadCloudStatisticContributions,
@@ -49,10 +50,11 @@ export function recordCloudStatisticDelta(input: {
     bookId: input.bookId,
     title: input.title,
     dateKey: input.dateKey,
-    // Contributions are intentionally not clamped here. A rewind/undo on one
-    // device must be able to subtract from progress accumulated elsewhere.
-    readingTime: (old?.readingTime || 0) + (Number(input.readingTimeDelta) || 0),
-    charactersRead: (old?.charactersRead || 0) + (Number(input.characterDelta) || 0),
+    // A device may undo its own recent progress, but it must never create
+    // a negative contribution that subtracts statistics belonging to another
+    // device when the Worker sums snapshots.
+    readingTime: Math.max(0, (old?.readingTime || 0) + (Number(input.readingTimeDelta) || 0)),
+    charactersRead: Math.max(0, (old?.charactersRead || 0) + (Number(input.characterDelta) || 0)),
     lastStatisticModified: Date.now(),
     ...(clearingCompletion
       ? { clearCompletion: true }
@@ -122,6 +124,14 @@ export async function flushPendingCloudStatistics(): Promise<void> {
         await api.putStatisticSnapshot(snapshot);
         acknowledgeCloudStatisticSnapshot(key, fingerprint);
       } catch (error) {
+        // A deleted cloud book can leave an old local dirty snapshot behind. It
+        // can never be accepted (the Worker requires the book to exist), so do
+        // not let that dead item block every newer book's statistics forever.
+        if (error instanceof CloudApiError && error.status === 404) {
+          discardCloudStatisticSnapshot(key);
+          continue;
+        }
+
         // Keep the exact cumulative snapshot dirty. In particular, stop after a
         // 429 instead of hammering the Worker with every historical row.
         if (isRetryableStatisticUploadError(error)) {
@@ -225,7 +235,10 @@ export async function syncCloudStatisticsToLocal(): Promise<CloudStatisticAggreg
   const api = getConfiguredCloudApi();
   if (!api) return [];
 
-  await flushPendingCloudStatistics().catch(() => undefined);
+  // Never replace the IndexedDB cache with an older cloud snapshot when
+  // this device still has unsaved statistics. If the flush fails, propagate the
+  // error and let the Statistics page keep showing its local cache.
+  await flushPendingCloudStatistics();
   const cloudStats = await api.getStatistics();
   const byTitle = new Map<string, BooksDbStatistic[]>();
   for (const stat of cloudStats) {

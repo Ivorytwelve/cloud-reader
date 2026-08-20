@@ -47,7 +47,7 @@
     getDateString,
     getDaysBetween,
     getPreviousDayKey,
-    secondsToMinutes
+    formatReadingDuration
   } from '$lib/functions/statistic-util';
   import { caluclatePercentage, dummyFn, limitToRange, pluralize } from '$lib/functions/utils';
   import { debounceTime, fromEvent, tap } from 'rxjs';
@@ -330,16 +330,22 @@
 
             entryData.titles.add(entry.title);
 
-            maxReadingTime = Math.max(maxReadingTime, entryData.readingTime);
-            minReadingTime = minReadingTime
-              ? Math.min(minReadingTime, entryData.readingTime)
-              : entryData.readingTime;
-
             daysRead.add(dateKey);
           }
 
           globalHeatmapDayData.set(dateKey, entryData);
         }
+      }
+
+      // Compute the scale from completed per-day totals. Doing this while each
+      // title is being accumulated can leave minReadingTime stuck on a partial
+      // value for days that contain multiple titles.
+      for (const dayData of globalHeatmapDayData.values()) {
+        if (!dayData.readingTime) continue;
+        maxReadingTime = Math.max(maxReadingTime, dayData.readingTime);
+        minReadingTime = minReadingTime
+          ? Math.min(minReadingTime, dayData.readingTime)
+          : dayData.readingTime;
       }
 
       if (currentReadingStreak.startDate) {
@@ -488,7 +494,7 @@
           entryData.readingTime += entry.readingTime;
           entryData.charactersRead += entry.charactersRead;
 
-          if (entryData.readingTime) {
+          if (entry.readingTime) {
             entryData.titles.add(entry.title);
           }
 
@@ -995,7 +1001,7 @@
           color: '',
           dayDetails: [
             dateString,
-            `${secondsToMinutes(dayData.readingTime)} min`,
+            formatReadingDuration(dayData.readingTime),
             `${dayData.charactersRead} characters`,
             pluralize(dayData.titles.size, 'title')
           ],
@@ -1008,7 +1014,7 @@
           heatmapRow,
           heatmapColumn,
           color: '',
-          dayDetails: [dateString, `0 min`, `0 characters`, `0 titles`],
+          dayDetails: [dateString, `0m`, `0 characters`, `0 titles`],
           readingTime: 0,
           charactersRead: 0
         };
@@ -1083,9 +1089,9 @@
         pluralize(currentReadingGoalWindow.titles.size, 'title'),
         ...(currentReadingGoalWindow.timeGoal
           ? [
-              `${secondsToMinutes(currentReadingGoalWindow.readingTime)} / ${secondsToMinutes(
+              `${formatReadingDuration(currentReadingGoalWindow.readingTime)} / ${formatReadingDuration(
                 currentReadingGoalWindow.timeGoal
-              )} min (${currentReadingGoalWindow.normalizedReadingTimePercentage}%)`
+              )} (${currentReadingGoalWindow.normalizedReadingTimePercentage}%)`
             ]
           : []),
         ...(currentReadingGoalWindow.characterGoal

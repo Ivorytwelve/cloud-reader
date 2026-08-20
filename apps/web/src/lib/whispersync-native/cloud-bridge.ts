@@ -610,12 +610,15 @@ export function installCloudAudiobookProgressEvents(): () => void {
 
   const onVisibilityChange = () => {
     if (document.visibilityState === 'hidden') {
-      // Save the last genuine foreground position before suspension. A paused
-      // reader is then fully disarmed. If audio is genuinely still playing in
-      // the background it can keep syncing until another tab claims this book.
+      // Snapshot before the browser can suspend the page. If playback keeps
+      // running in the background, this tab is still the live authority and
+      // its normal timeupdate writes continue advancing cloud progress. Merely
+      // returning to the foreground must not GET an older periodic cloud
+      // snapshot and seek the live audio backwards.
+      const paused = get(paused$);
       const pending = saveCloudAudiobookProgress(true);
-      cloudAudioNeedsRevalidation = true;
-      if (get(paused$)) {
+      cloudAudioNeedsRevalidation = cloudAudioNeedsRevalidation || paused;
+      if (paused) {
         cloudAudioWritesArmed = false;
         cloudAudioUserDirty = false;
       }
@@ -634,9 +637,12 @@ export function installCloudAudiobookProgressEvents(): () => void {
     requestCloudAudioRevalidationIfNeeded();
   };
 
-  const onPageShow = () => {
-    // pageshow also covers browsers restoring a frozen/BFCache page where a
-    // normal visibilitychange may never have run.
+  const onPageShow = (event: PageTransitionEvent) => {
+    // Only a real BFCache restore needs an unconditional reconciliation. A
+    // normal pageshow/foreground transition must not disturb continuously
+    // playing audio. Cross-tab writes still set cloudAudioNeedsRevalidation
+    // through the storage listener below.
+    if (!event.persisted) return;
     cloudAudioNeedsRevalidation = true;
     cloudAudioWritesArmed = false;
     requestCloudAudioRevalidationIfNeeded();

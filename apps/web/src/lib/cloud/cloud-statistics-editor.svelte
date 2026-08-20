@@ -3,7 +3,7 @@
   import { faRotate, faTrash, faXmark } from '@fortawesome/free-solid-svg-icons';
   import Fa from 'svelte-fa';
   import { getConfiguredCloudApi } from './progress-session';
-  import { syncCloudStatisticsToLocal } from './cloud-statistics';
+  import { flushPendingCloudStatistics, syncCloudStatisticsToLocal } from './cloud-statistics';
   import type { CloudStatisticAggregate } from './types';
 
   const dispatch = createEventDispatcher<{ close: void; changed: void }>();
@@ -31,6 +31,7 @@
     loading = true;
     error = '';
     try {
+      await flushPendingCloudStatistics();
       entries = (await api.getStatistics()).slice().sort((a, b) =>
         a.dateKey === b.dateKey ? a.title.localeCompare(b.title, 'ja-JP') : b.dateKey.localeCompare(a.dateKey)
       );
@@ -68,6 +69,7 @@
     savingKey = key(entry);
     error = '';
     try {
+      await flushPendingCloudStatistics();
       await api.updateStatisticEntry(entry.bookId, entry.dateKey, {
         title: entry.title,
         readingTime,
@@ -91,6 +93,7 @@
     savingKey = key(entry);
     error = '';
     try {
+      await flushPendingCloudStatistics();
       await api.deleteStatisticEntry(entry.bookId, entry.dateKey);
       await syncCloudStatisticsToLocal();
       await load();

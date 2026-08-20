@@ -58,6 +58,7 @@
     getDateString,
     getNumberFromObject,
     getStartHoursDate,
+    formatReadingDuration,
     secondsToMinutes
   } from '$lib/functions/statistic-util';
   import { clickOutside } from '$lib/functions/use-click-outside';
@@ -524,9 +525,9 @@
           component: ConfirmDialog,
           props: {
             dialogHeader: 'Update Data',
-            dialogMessage: `This will update the Data for ${title} on ${dateKey}.\n\nTime: ${secondsToMinutes(
+            dialogMessage: `This will update the Data for ${title} on ${dateKey}.\n\nTime: ${formatReadingDuration(
               statistic.readingTime
-            )} min => ${secondsToMinutes(newReadingTime)} min\nCharacters: ${
+            )} => ${formatReadingDuration(newReadingTime)}\nCharacters: ${
               statistic.charactersRead
             } => ${newCharactersRead}\nSpeed: ${statistic.lastReadingSpeed} / h => ${
               newStatistic.lastReadingSpeed
@@ -752,12 +753,14 @@
             ? Math.min(statistic.minReadingSpeed, entry.minReadingSpeed)
             : entry.minReadingSpeed;
           statistic.altMinReadingSpeed = statistic.altMinReadingSpeed
-            ? Math.min(statistic.altMinReadingSpeed, entry.altMinReadingSpeed)
-            : statistic.altMinReadingSpeed;
-          statistic.maxReadingSpeed = Math.max(statistic.maxReadingSpeed, entry.lastReadingSpeed);
+            ? entry.altMinReadingSpeed
+              ? Math.min(statistic.altMinReadingSpeed, entry.altMinReadingSpeed)
+              : statistic.altMinReadingSpeed
+            : entry.altMinReadingSpeed;
+          statistic.maxReadingSpeed = Math.max(statistic.maxReadingSpeed, entry.maxReadingSpeed);
           weightedSum += entry.readingTime * entry.charactersRead;
 
-          if (statistic.readingTime) {
+          if (entry.readingTime) {
             validReadingDays += 1;
           }
         }

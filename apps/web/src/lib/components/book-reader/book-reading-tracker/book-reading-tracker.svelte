@@ -100,13 +100,17 @@
     const overlappedDay = absoluteTimeDiff > secondsOnDay;
     const timeDiffForToday = overlappedDay ? secondsOnDay : absoluteTimeDiff;
     const dateTimeKey = getDateTimeString(lastStatisticModified);
+    const characterDiffForReferenceDay = overlappedDay && absoluteTimeDiff > 0
+      ? Math.round(characterDiff * (timeDiffForToday / absoluteTimeDiff))
+      : characterDiff;
+    const characterDiffForOtherDay = characterDiff - characterDiffForReferenceDay;
     const trackerHistory: TrackingHistory[] = [
       {
         id: lastStatisticModified * Math.random(),
         dateKey: referenceDateKey,
         dateTimeKey,
         timeDiff: isNegativeTimeDiff ? -timeDiffForToday : timeDiffForToday,
-        characterDiff,
+        characterDiff: characterDiffForReferenceDay,
         saved: false
       }
     ];
@@ -130,7 +134,12 @@
       const otherDayStatistics =
         statistics.get(otherDayKey) || getDefaultStatistic(bookTitle, otherDayKey);
 
-      updateStatistic(otherDayStatistics, otherDayTimeDiff, characterDiff, lastStatisticModified);
+      updateStatistic(
+        otherDayStatistics,
+        otherDayTimeDiff,
+        overlappedDay ? characterDiffForOtherDay : characterDiff,
+        lastStatisticModified
+      );
 
       statistics.set(otherDayKey, otherDayStatistics);
       statisticsToStore.add(otherDayKey);
@@ -141,7 +150,7 @@
           dateKey: otherDayStatistics.dateKey,
           dateTimeKey,
           timeDiff: otherDayTimeDiff,
-          characterDiff,
+          characterDiff: characterDiffForOtherDay,
           saved: false
         });
       }
@@ -156,7 +165,7 @@
       updateStatistic(
         todaysStatistics,
         isNegativeTimeDiff ? -timeDiffForToday : timeDiffForToday,
-        characterDiff,
+        characterDiffForReferenceDay,
         lastStatisticModified
       );
     } else {
@@ -329,6 +338,19 @@
   let audiobookLastExploredCharCount = exploredCharCount;
   let audiobookPendingCharacters = 0;
   let audiobookPendingTime = 0;
+  // Time since the last positive EPUB-character movement, grouped by reading
+  // day. Audio can keep advancing while a mobile browser throttles the hidden
+  // reader; when the reader catches up later, these buckets let us credit those
+  // characters to the days on which the listening actually happened instead
+  // of dumping the whole catch-up onto the foreground-return day.
+  const audiobookUnattributedTimeByDate = new Map<
+    string,
+    { seconds: number; referenceTick: number }
+  >();
+  // Set while playback is backgrounded. Mobile browsers may throttle the
+  // hidden reader and then advance it in one large jump on return; that catch-up
+  // is real reading progress, not a manual forward skip.
+  let audiobookBackgroundCharacterCatchupPending = false;
   let audiobookLastStatProcessAt = 0;
   let audiobookPauseStartedAt = 0;
   let audiobookSample:
@@ -624,6 +646,15 @@
   }
 
   function handleVisibilityChange(state: DocumentVisibilityState) {
+    if (
+      state === 'hidden' &&
+      $cloudAudiobookTrackingActive$ &&
+      audiobookSample &&
+      !audiobookSample.paused
+    ) {
+      audiobookBackgroundCharacterCatchupPending = true;
+    }
+
     if ($trackerAutoPause$ !== TrackerAutoPause.MODERATE) {
       return;
     }
@@ -753,6 +784,8 @@
     audiobookPauseStartedAt = 0;
     audiobookPendingTime = 0;
     audiobookPendingCharacters = 0;
+    audiobookUnattributedTimeByDate.clear();
+    audiobookBackgroundCharacterCatchupPending = false;
     audiobookLastExploredCharCount = exploredCharCount;
     audiobookLastStatProcessAt = Date.now();
   }
@@ -799,7 +832,12 @@
           mediaDelta / previous.playbackRate,
           wallDelta + 0.5
         );
-        audiobookPendingTime += Math.max(0, playedWallTime);
+        const naturalListeningTime = Math.max(0, playedWallTime);
+        audiobookPendingTime += naturalListeningTime;
+        accumulateAudiobookUnattributedTime(naturalListeningTime, now);
+        if (document.visibilityState === 'hidden') {
+          audiobookBackgroundCharacterCatchupPending = true;
+        }
       }
     }
 
@@ -825,6 +863,59 @@
     flushAudiobookPending();
   }
 
+  function accumulateAudiobookUnattributedTime(seconds: number, referenceTick: number) {
+    let remaining = Math.max(0, seconds);
+    if (!remaining) return;
+
+    let cursor = new Date(referenceTick);
+    while (remaining > 0.000001) {
+      // getSecondsToDate() is the distance back to the configured reading-day
+      // boundary. Split a delayed media sample across that boundary so later
+      // character catch-up can be assigned to the correct date(s).
+      const secondsOnDay = Math.max(0.001, getSecondsToDate($startDayHoursForTracker$, cursor));
+      const slice = Math.min(remaining, secondsOnDay);
+      const dateKey = getDateKey($startDayHoursForTracker$, cursor);
+      const existing = audiobookUnattributedTimeByDate.get(dateKey);
+      audiobookUnattributedTimeByDate.set(dateKey, {
+        seconds: (existing?.seconds || 0) + slice,
+        referenceTick: existing?.referenceTick || cursor.getTime()
+      });
+
+      remaining -= slice;
+      if (remaining <= 0.000001) break;
+      cursor = new Date(cursor.getTime() - slice * 1000 - 1);
+    }
+  }
+
+  function attributeAudiobookCharactersToListeningDays(characterDiff: number): boolean {
+    if (characterDiff <= 0 || !audiobookUnattributedTimeByDate.size) return false;
+
+    const buckets = [...audiobookUnattributedTimeByDate.values()].filter(
+      (bucket) => bucket.seconds > 0
+    );
+    const totalSeconds = buckets.reduce((sum, bucket) => sum + bucket.seconds, 0);
+    if (!(totalSeconds > 0)) return false;
+
+    let charactersRemaining = characterDiff;
+    for (let index = 0; index < buckets.length; index += 1) {
+      const bucket = buckets[index];
+      const charactersForBucket =
+        index === buckets.length - 1
+          ? charactersRemaining
+          : Math.round(characterDiff * (bucket.seconds / totalSeconds));
+      charactersRemaining -= charactersForBucket;
+      if (!charactersForBucket) continue;
+
+      // Time was already recorded continuously from the media timeline. This is
+      // a character-only correction, deliberately using the original listening
+      // day's timestamp rather than the time at which the hidden EPUB caught up.
+      void processStatistics(charactersForBucket, 0, bucket.referenceTick, false);
+    }
+
+    audiobookUnattributedTimeByDate.clear();
+    return true;
+  }
+
   function collectAudiobookCharacters() {
     if (!trackerInitialized || !$cloudAudiobookTrackingActive$) return;
 
@@ -839,11 +930,23 @@
     // earlier section again will count again.
     audiobookLastExploredCharCount = current;
 
+    if (difference < 0) {
+      // A rewind starts a new text/audio relationship. Do not carry listening
+      // buckets from the pre-rewind position into the next forward movement.
+      audiobookUnattributedTimeByDate.clear();
+    }
+
     if (
       difference > 0 &&
       $trackerForwardSkipThreshold$ &&
-      difference >= $trackerForwardSkipThreshold$
+      difference >= $trackerForwardSkipThreshold$ &&
+      !audiobookBackgroundCharacterCatchupPending
     ) {
+      // A deliberate/manual jump breaks the relationship between elapsed audio
+      // time and EPUB distance, so do not let old time buckets contaminate the
+      // next genuine character movement.
+      audiobookUnattributedTimeByDate.clear();
+      audiobookBackgroundCharacterCatchupPending = false;
       return;
     }
 
@@ -852,10 +955,14 @@
       $trackerBackwardSkipThreshold$ &&
       Math.abs(difference) >= $trackerBackwardSkipThreshold$
     ) {
+      audiobookBackgroundCharacterCatchupPending = false;
       return;
     }
 
-    audiobookPendingCharacters += difference;
+    if (!attributeAudiobookCharactersToListeningDays(difference)) {
+      audiobookPendingCharacters += difference;
+    }
+    audiobookBackgroundCharacterCatchupPending = false;
   }
 
   function flushAudiobookPending(force = false) {

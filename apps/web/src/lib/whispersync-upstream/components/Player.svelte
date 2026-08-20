@@ -139,7 +139,7 @@
 	}
 
 	export async function onScrollToSubtitle(force = false, prioritizedSubtitle?: Subtitle) {
-		if ($isRecording$ || (!force && !$readerEnableAutoScroll$)) {
+		if ($isRecording$ || (!force && !shouldAutoFollowReader())) {
 			return;
 		}
 
