@@ -4,6 +4,7 @@
  */
 import { get } from 'svelte/store';
 import { setAudioContext, setSubtitleContext, updateSubtitles } from '$lib/whispersync-upstream/lib/files';
+import { getRemoteMp3EmbeddedArtwork } from '$lib/whispersync-upstream/lib/id3-chapters';
 import {
 	bookData$,
 	currentAudioSourceUrl$,
@@ -52,6 +53,7 @@ let cloudAudioSaveInFlight: Promise<void> | undefined;
 let cloudAudioSaveTimer: ReturnType<typeof setTimeout> | undefined;
 let cloudAudioRetryDelay = CLOUD_AUDIO_RETRY_MIN_MS;
 const cloudAudioWriteBuffer = new AudiobookWriteBuffer();
+const cloudAudioCoverBackfills = new Map<string, Promise<string>>();
 
 export async function openCloudAudiobook(api: TtsuCloudApi, book: CloudBook): Promise<void> {
 	activeCloudBookId = book.id;
@@ -129,9 +131,62 @@ export async function openCloudAudiobook(api: TtsuCloudApi, book: CloudBook): Pr
 		}))
   });
 
+  // Old Audiobook Center uploads can contain perfectly valid APIC artwork in
+  // the remote MP3 while lacking the separately cached audioCover asset. Recover
+  // it with a bounded ID3 Range read, upload only the tiny image, and switch this
+  // live session to the audiobook artwork when ready. Playback never waits for
+  // this best-effort repair.
+  if (!audioCoverUrl) {
+    void backfillMissingCloudAudioCover(api, book, audioUrl).catch((error) => {
+      console.warn('Could not backfill embedded cloud audiobook cover', error);
+    });
+  }
+
   // Loading the source itself may emit timeupdate/pause events. They are not
   // user progress, so only arm writes after the remote source has been seeded.
   cloudAudioWritesArmed = true;
+}
+
+async function backfillMissingCloudAudioCover(
+  api: TtsuCloudApi,
+  book: CloudBook,
+  audioUrl: string
+): Promise<string> {
+  if (!book.assets.audio || book.assets.audioCover || !/\.mp3$/i.test(book.assets.audio.fileName)) return '';
+
+  const existing = cloudAudioCoverBackfills.get(book.id);
+  if (existing) return existing;
+
+  const task = (async () => {
+    const artwork = await getRemoteMp3EmbeddedArtwork(audioUrl, book.assets.audio?.fileName || '');
+    if (!artwork?.blob.size) return '';
+
+    const audioName = book.assets.audio?.fileName || 'audiobook.mp3';
+    const stem = audioName.replace(/\.[^.]+$/, '') || 'audiobook';
+    const fileName = `${stem}.audio-cover.${artwork.extension}`;
+    const coverFile = new File([artwork.blob], fileName, { type: artwork.mimeType });
+    await api.uploadAsset(book.id, 'audioCover', coverFile);
+    const coverUrl = await api.getSignedAssetUrl(book.id, 'audioCover');
+
+    // The upload endpoint writes audioCover into the canonical cloud manifest.
+    // Do not replace activeCloudBook$ here with the older `book` snapshot: other
+    // asynchronous metadata backfills/settings writes may have advanced it while
+    // cover extraction was running.
+
+    // Do not let a slow extraction from a previously opened book replace the
+    // artwork of a newer session.
+    if (activeCloudBookId === book.id && get(currentAudioSourceUrl$) === audioUrl) {
+      currentCoverUrl$.set(coverUrl);
+    }
+    return coverUrl;
+  })();
+
+  cloudAudioCoverBackfills.set(book.id, task);
+  try {
+    return await task;
+  } finally {
+    cloudAudioCoverBackfills.delete(book.id);
+  }
 }
 
 /**
