@@ -103,10 +103,15 @@ export async function openCloudAudiobook(api: TtsuCloudApi, book: CloudBook): Pr
   const remoteProgress = session.sync.current;
   applyAuthoritativeCloudAudiobookProgress(remoteProgress, false);
 
-  const [audioUrl, audioCoverUrl] = await Promise.all([
+  const [audioUrl, audioCoverUrl, epubCoverUrl] = await Promise.all([
     api.getSignedAssetUrl(book.id, 'audio'),
-    book.assets.audioCover ? api.getSignedAssetUrl(book.id, 'audioCover') : Promise.resolve('')
+    book.assets.audioCover ? api.getSignedAssetUrl(book.id, 'audioCover') : Promise.resolve(''),
+    // Audiobook Center versions predating dedicated audioCover uploads still
+    // have the lightweight EPUB cover asset. Use it as a safe remote fallback
+    // instead of clearing the player's artwork to an empty string.
+    book.assets.cover ? api.getSignedAssetUrl(book.id, 'cover') : Promise.resolve('')
   ]);
+  const remoteCoverUrl = audioCoverUrl || epubCoverUrl;
 
   // Do not make a Blob from the audiobook. The browser keeps native range-seek
   // behavior when the Whispersync <audio> element points straight at the Worker.
@@ -116,7 +121,7 @@ export async function openCloudAudiobook(api: TtsuCloudApi, book: CloudBook): Pr
   // a fast audio element could restore from its default 0-second position.
   currentRemoteAudioFileName$.set(book.assets.audio.fileName);
   await setAudioContext(get(currentCoverUrl$), get(currentAudioSourceUrl$), undefined, {
-    coverUrl: audioCoverUrl,
+    coverUrl: remoteCoverUrl,
     audioSourceUrl: audioUrl,
 		chapters: (book.audio?.chapters || []).map((chapter) => ({
 			...chapter,
